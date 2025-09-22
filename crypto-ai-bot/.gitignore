@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pkl
+*.png
+*.csv
+signals.txt
+last_signals.json
+.ipynb_checkpoints/

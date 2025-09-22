@@ -1,0 +1,8 @@
+yfinance
+pandas
+numpy
+ta
+scikit-learn
+joblib
+vectorbt
+matplotlib
