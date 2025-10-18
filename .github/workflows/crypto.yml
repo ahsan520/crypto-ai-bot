@@ -2,7 +2,7 @@ name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "0 * * * *"  # Runs hourly
+    - cron: "0 * * * *"  # ⏰ Runs hourly
   workflow_dispatch:
 
 permissions:
@@ -41,10 +41,10 @@ jobs:
       - name: 🧹 Prepare utils directory
         run: |
           mkdir -p utils
-          # keep existing files if present; initialize otherwise
+          mkdir -p utils/signals
           [[ -f utils/last_signals.json ]] || echo "{}" > utils/last_signals.json
-          [[ -f utils/signals.txt ]] || echo "" > utils/signals.txt
-          [[ -f utils/holds.txt ]] || echo "" > utils/holds.txt
+          [[ -f utils/signals/signals.txt ]] || echo "" > utils/signals/signals.txt
+          [[ -f utils/signals/holds.txt ]] || echo "" > utils/signals/holds.txt
           [[ -f utils/summary.json ]] || echo "{}" > utils/summary.json
 
       - name: 🔑 Configure secrets in env
@@ -54,7 +54,7 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
-        run: echo "✅ Secrets will be available to the run."
+        run: echo "✅ Secrets loaded successfully into environment."
 
       - name: 🧠 Run AI Backtest Predictor (optional)
         run: |
@@ -75,7 +75,7 @@ jobs:
       - name: 🧠 Check for BUY/SELL signals
         id: check_signals
         run: |
-          if grep -q "BUY" utils/signals.txt || grep -q "SELL" utils/signals.txt; then
+          if grep -q "BUY" utils/signals/signals.txt || grep -q "SELL" utils/signals/signals.txt; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
@@ -89,7 +89,7 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "GitHub Actions"
           git pull origin main || true
-          git add utils/last_signals.json utils/summary.json utils/signals.txt utils/holds.txt || true
+          git add utils/last_signals.json utils/summary.json utils/signals/signals.txt utils/signals/holds.txt || true
           git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit."
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped."
 
@@ -99,7 +99,7 @@ jobs:
           cat utils/summary.json || echo "{}"
           echo ""
           echo "🪙 BUY/SELL signals:"
-          cat utils/signals.txt || echo "No buy/sell signals found."
+          cat utils/signals/signals.txt || echo "No buy/sell signals found."
           echo ""
           echo "🕊 HOLD signals:"
-          cat utils/holds.txt || echo "No holds found."
+          cat utils/signals/holds.txt || echo "No holds found."
