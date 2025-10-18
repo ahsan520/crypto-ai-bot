@@ -4,7 +4,7 @@ import smtplib
 import requests
 from email.mime.text import MIMEText
 from datetime import datetime
-
+ 
 def read_signal():
     """Read BUY/HOLD/SELL signal from last_signal.json or signals.txt"""
     signal = None
