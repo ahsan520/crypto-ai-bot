@@ -2,33 +2,22 @@ name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    - cron: "*/30 * * * *"   # every 30 minutes
   workflow_dispatch:
 
 jobs:
-  run:
+  crypto-ai:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      # -----------------------------------------------------
-      # 🛎️ STEP 1: Checkout repository
-      # -----------------------------------------------------
-      - name: 🛎️ Checkout repository
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------
-      # 🐍 STEP 2: Set up Python
-      # -----------------------------------------------------
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
-      # -----------------------------------------------------
-      # ♻️ STEP 3: Cache pip packages
-      # -----------------------------------------------------
-      - name: ♻️ Cache pip packages
+      - name: ♻️ Cache Python packages
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -36,27 +25,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # -----------------------------------------------------
-      # 📦 STEP 4: Install dependencies
-      # -----------------------------------------------------
-      - name: 📦 Install dependencies (cached)
+      - name: 📦 Install dependencies (only if cache miss)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          echo "Installing dependencies if not cached..."
+          pip install --upgrade pip
+          pip install -r requirements.txt || true
 
-      # -----------------------------------------------------
-      # ⚙️ STEP 5: Ensure utils folder + cleanup
-      # -----------------------------------------------------
-      - name: 🧹 Prepare utils folder
-        run: |
-          mkdir -p utils
-          echo "{}" > utils/last_signals.json
-          echo "" > utils/signals.txt
-          echo "🧹 Cleared old signal files before run."
-
-      # -----------------------------------------------------
-      # 🚀 STEP 6: Run crypto_signal.py
-      # -----------------------------------------------------
       - name: 🚀 Run Crypto AI Bot
         env:
           ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
@@ -66,27 +40,10 @@ jobs:
         run: |
           echo "🚀 Starting Crypto AI Bot..."
           python crypto_signal.py
-          echo "✅ Bot execution completed."
 
-      # -----------------------------------------------------
-      # 💾 STEP 7: Commit and push signal updates
-      # -----------------------------------------------------
-      - name: 💾 Commit signal updates
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase
-          git add utils/last_signals.json utils/signals.txt || true
-          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit"
-          git push || echo "No changes to push"
-
-      # -----------------------------------------------------
-      # 📊 STEP 8: Display signal summary
-      # -----------------------------------------------------
-      - name: 📊 Signal Summary
-        run: |
-          echo "📊 ===== SIGNAL SUMMARY ====="
-          echo "🪙 Contents of utils/last_signals.json:"
-          cat utils/last_signals.json || echo "(file not found)"
-          echo "📜 Recent log entries:"
-          tail -n 10 utils/signals.txt || echo "(no signals yet)"
+      - name: 🧾 Upload signals output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-signals
+          path: utils/signals.txt
