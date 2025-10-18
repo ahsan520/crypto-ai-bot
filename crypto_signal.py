@@ -1,151 +1,199 @@
 import os
 import json
-import smtplib
 import requests
+import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import ta
+import joblib
+from pathlib import Path
 
+# ------------------------------------------------------------
+# 📦 CONFIGURATION
+# ------------------------------------------------------------
+LAST_SIGNALS_FILE = "last_signals.json"
+SIGNALS_TXT = "signals.txt"
+MODEL_FILE = "crypto_ai_model.pkl"
 
-def generate_signal():
-    """Generate or update last_signals.json if it doesn't exist or is empty"""
-    signal_file = "last_signals.json"
+ZAPIER_URL = os.getenv("ZAPIER_URL")
+SIGNAL_EMAIL = os.getenv("SIGNAL_EMAIL")
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
 
-    if os.path.exists(signal_file):
+SYMBOLS = ["BTC-USD", "GALA-USD", "XRP-USD"]
+INTERVAL = "30m"
+PERIOD = "60d"
+ATR_WINDOW = 14
+ATR_MULTIPLIER = 1.5
+
+# ------------------------------------------------------------
+# ⚙️ UTILITY HELPERS
+# ------------------------------------------------------------
+def load_last_signals():
+    if os.path.exists(LAST_SIGNALS_FILE):
         try:
-            with open(signal_file) as f:
-                data = json.load(f)
-                if data.get("signal"):
-                    print("✅ Existing signal found in last_signals.json.")
-                    return  # no need to overwrite
+            with open(LAST_SIGNALS_FILE, "r") as f:
+                return json.load(f)
         except Exception as e:
-            print(f"⚠️ Could not read {signal_file}: {e}")
+            print("⚠️ Failed to load last_signals.json:", e)
+    return {}
 
-    # --- Generate a sample/test signal ---
-    signal_data = {
-        "symbol": "BTCUSDT",
-        "signal": "BUY",
-        "confidence": 0.87,
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "source": "auto-test"
-    }
+def save_last_signals(data):
+    with open(LAST_SIGNALS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-    with open(signal_file, "w") as f:
-        json.dump(signal_data, f, indent=2)
+# ------------------------------------------------------------
+# 🤖 STRATEGY SECTION (AI-BASED)
+# ------------------------------------------------------------
+def build_features(df):
+    df = df.copy()
+    df['rsi'] = ta.momentum.RSIIndicator(df['Close']).rsi()
+    macd = ta.trend.MACD(df['Close'])
+    df['macd'] = macd.macd()
+    bb = ta.volatility.BollingerBands(df['Close'])
+    df['bb_mid'] = bb.bollinger_mavg()
+    df['bb_high'] = bb.bollinger_hband()
+    df['bb_low'] = bb.bollinger_lband()
+    df['bb_width'] = (df['bb_high'] - df['bb_low']) / df['bb_mid']
+    df['percent_b'] = (df['Close'] - df['bb_low']) / (df['bb_high'] - df['bb_low'])
+    df['volume_change'] = df['Volume'].pct_change().fillna(0)
+    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=ATR_WINDOW)
+    df['ATR'] = atr.average_true_range()
+    o = df['Open']; h = df['High']; l = df['Low']; c = df['Close']
+    body = (c - o).abs()
+    candle_range = (h - l).replace(0, np.nan)
+    upper_shadow = h - np.maximum(o, c)
+    lower_shadow = np.minimum(o, c) - l
+    df['shooting_star'] = (((body <= 0.3*candle_range) & (upper_shadow >= 2*body) & (lower_shadow <= 0.2*body)).fillna(0)).astype(int)
+    df['hammer'] = (((body <= 0.3*candle_range) & (lower_shadow >= 2*body) & (upper_shadow <= 0.2*body)).fillna(0)).astype(int)
+    return df.dropna()
 
-    print("🆕 Created new last_signals.json:")
-    print(json.dumps(signal_data, indent=2))
-
-
-def read_signal():
-    """Read BUY/HOLD/SELL signal from last_signals.json or signals.txt"""
-    signal = None
-    extra_info = {}
-
-    if os.path.exists("last_signals.json"):
+def ensure_model(df):
+    if os.path.exists(MODEL_FILE):
         try:
-            with open("last_signals.json") as f:
-                data = json.load(f)
-                print("📁 Contents of last_signals.json:")
-                print(json.dumps(data, indent=2))
-                signal = str(data.get("signal", "")).strip().upper()
-                extra_info = data
-        except Exception as e:
-            print(f"⚠️ Error reading last_signals.json: {e}")
+            return joblib.load(MODEL_FILE)
+        except:
+            pass
+    from sklearn.ensemble import RandomForestClassifier
+    df['future_return'] = df['Close'].shift(-3) / df['Close'] - 1
+    df = df.dropna()
+    df['label'] = (df['future_return'] > 0.002).astype(int)
+    feature_cols = ['rsi','macd','bb_mid','bb_high','bb_low','bb_width','percent_b','volume_change','shooting_star','hammer']
+    X = df[feature_cols].fillna(0)
+    y = df['label']
+    model = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
+    model.fit(X, y)
+    joblib.dump(model, MODEL_FILE)
+    return model
 
-    elif os.path.exists("signals.txt"):
-        try:
-            with open("signals.txt") as f:
-                signal = f.read().strip().upper()
-                print(f"📁 Contents of signals.txt: {signal}")
-        except Exception as e:
-            print(f"⚠️ Error reading signals.txt: {e}")
+def generate_signals():
+    print("📡 Generating AI-based crypto signals ...")
+    last_signals = load_last_signals()
+    model = None
+    new_signals = {}
 
-    if not signal or signal not in ["BUY", "SELL", "HOLD"]:
-        signal = "NONE"
+    for sym in SYMBOLS:
+        print(f"Downloading {sym} ...")
+        df = yf.download(sym, period=PERIOD, interval=INTERVAL, progress=False).dropna()
+        if df.empty:
+            print(f"⚠️ No data for {sym}")
+            continue
 
-    return signal, extra_info
+        df = build_features(df)
+        if model is None:
+            model = ensure_model(df)
 
+        X = df[['rsi','macd','bb_mid','bb_high','bb_low','bb_width','percent_b','volume_change','shooting_star','hammer']].fillna(0)
+        ai_pred = model.predict(X)
 
-def send_via_zapier(signal_text, timestamp, extra_info=None):
-    zapier_url = os.getenv("ZAPIER_URL")
-    if not zapier_url:
+        entry = (df['Close'] <= df['bb_low']) & (ai_pred == 1)
+        exit_ = df['Close'] >= df['bb_high']
+
+        signal = None
+        if len(entry) >= 2:
+            if entry.iloc[-1] and not entry.iloc[-2]:
+                signal = "BUY"
+            elif exit_.iloc[-1] and not exit_.iloc[-2]:
+                signal = "SELL"
+
+        if not signal:
+            signal = "HOLD"
+
+        new_signals[sym] = signal
+
+        print(f"🔹 {sym}: {signal}")
+
+    return new_signals
+
+# ------------------------------------------------------------
+# 📤 NOTIFICATION LOGIC
+# ------------------------------------------------------------
+def send_via_zapier(signals):
+    if not ZAPIER_URL:
         print("⚠️ ZAPIER_URL not set. Skipping Zapier notification.")
-        return False
-
+        return
     try:
-        payload = {
-            "signal": signal_text,
-            "time": timestamp,
-            "details": extra_info or {}
-        }
-        print(f"📡 Sending signal '{signal_text}' to Zapier...")
-        response = requests.post(zapier_url, json=payload)
-        if response.status_code == 200:
-            print("✅ Zapier notification sent successfully.")
-            return True
-        else:
-            print(f"⚠️ Zapier responded with {response.status_code}: {response.text}")
-            return False
+        payload = {"timestamp": datetime.utcnow().isoformat(), "signals": signals}
+        r = requests.post(ZAPIER_URL, json=payload)
+        print(f"✅ Sent to Zapier ({r.status_code})")
     except Exception as e:
-        print(f"❌ Error sending to Zapier: {e}")
-        return False
+        print("❌ Zapier send failed:", e)
 
-
-def send_via_email(signal_text, timestamp, extra_info=None):
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
-    signal_email = os.getenv("SIGNAL_EMAIL")
-
-    if not smtp_user or not smtp_pass or not signal_email:
-        print("⚠️ Missing SMTP credentials. Skipping email notification.")
-        return False
-
+def send_via_email(signals):
+    if not (SMTP_USER and SMTP_PASS and SIGNAL_EMAIL):
+        print("⚠️ Email credentials not set. Skipping email send.")
+        return
     try:
-        subject = f"Crypto Signal: {signal_text}"
-        body = f"Crypto Signal: {signal_text}\nTime: {timestamp}\n\nDetails:\n{json.dumps(extra_info or {}, indent=2)}"
-
-        msg = MIMEText(body, "plain")
-        msg["Subject"] = subject
-        msg["From"] = smtp_user
-        msg["To"] = signal_email
-
-        print(f"📨 Sending email alert: {signal_text}")
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
+        msg = MIMEText(json.dumps(signals, indent=2))
+        msg["Subject"] = f"Crypto Signals - {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+        msg["From"] = SMTP_USER
+        msg["To"] = SIGNAL_EMAIL
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
-
-        print("✅ Email sent successfully.")
-        return True
+        print(f"📧 Signals emailed to {SIGNAL_EMAIL}")
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-        return False
+        print("❌ Email send failed:", e)
 
-
+# ------------------------------------------------------------
+# 🚀 MAIN BOT LOGIC
+# ------------------------------------------------------------
 def main():
-    # ✅ Step 1: Make sure we have a signal
-    generate_signal()
+    print("🚀 Starting Crypto AI Bot ...")
+    last_signals = load_last_signals()
+    new_signals = generate_signals()
 
-    # ✅ Step 2: Read and send it
-    signal, extra_info = read_signal()
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    if not new_signals or all(v == "HOLD" for v in new_signals.values()):
+        print("ℹ️ No actionable signals.")
+        return
 
-    print(f"🪙 Current Signal: {signal} at {timestamp}")
+    changed = {}
+    for sym, sig in new_signals.items():
+        prev = last_signals.get(sym)
+        if sig != prev:
+            changed[sym] = sig
+            last_signals[sym] = sig
 
-    alert_method = "NONE"
+    if not changed:
+        print("✅ No changes since last signal run.")
+        return
 
-    if signal in ["BUY", "SELL"]:
-        if send_via_zapier(signal, timestamp, extra_info):
-            alert_method = "ZAPIER"
-        else:
-            print("🔁 Zapier failed or not set. Trying email fallback...")
-            if send_via_email(signal, timestamp, extra_info):
-                alert_method = "SMTP"
-    else:
-        print(f"ℹ️ Signal is '{signal}'. No alert sent.")
+    print("📈 New signals detected:")
+    for sym, sig in changed.items():
+        print(f" - {sym}: {sig}")
 
-    print(f"📊 Alert method used: {alert_method}")
+    save_last_signals(last_signals)
+    with open(SIGNALS_TXT, "w") as f:
+        for sym, sig in changed.items():
+            f.write(f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} - {sym}: {sig}\n")
 
+    send_via_zapier(changed)
+    send_via_email(changed)
+
+    print("✅ Signals processed and saved.")
 
 if __name__ == "__main__":
     main()
