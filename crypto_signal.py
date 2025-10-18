@@ -2,125 +2,150 @@ import os
 import json
 import time
 import requests
-import yfinance as yf
 import pandas as pd
-import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
+from ta.volatility import BollingerBands
 
-# ======================
-# 🔧 Configuration
-# ======================
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-SIGNALS_FILE = "utils/signals.txt"
-LAST_SIGNALS_FILE = "utils/last_signals.json"
+# === Load settings ===
+CONFIG_FILE = "crypto.yml"
+UTILS_DIR = "utils"
+os.makedirs(UTILS_DIR, exist_ok=True)
+SIGNALS_FILE = os.path.join(UTILS_DIR, "signals.txt")
+LAST_FILE = os.path.join(UTILS_DIR, "last_signals.json")
 
-COINS = ["BTC-USD", "ETH-USD", "XRP-USD", "GALA-USD"]
+# === Load config ===
+if os.path.exists(CONFIG_FILE):
+    import yaml
+    with open(CONFIG_FILE, "r") as f:
+        cfg = yaml.safe_load(f)
+    TICKERS = cfg.get("tickers", ["BTC-USD", "ETH-USD"])
+    LOOKBACK = cfg.get("lookback_days", 90)
+    INTERVAL = cfg.get("interval", "1h")
+else:
+    print("⚠️ crypto.yml not found — using defaults.")
+    TICKERS = ["BTC-USD", "ETH-USD"]
+    LOOKBACK = 90
+    INTERVAL = "1h"
 
-# ======================
-# ⚙️ Helper: fetch from CoinGecko
-# ======================
+# === Env vars ===
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
+API_BASE = "https://api.coingecko.com/api/v3/simple/price"
+
+# === Helpers ===
 def fetch_from_coingecko(symbol):
-    coin_map = {
+    """Fetch simple price data for 90 days from CoinGecko"""
+    mapping = {
         "BTC-USD": "bitcoin",
         "ETH-USD": "ethereum",
         "XRP-USD": "ripple",
         "GALA-USD": "gala"
     }
-
-    coin = coin_map.get(symbol)
-    if not coin:
-        print(f"⚠️ No CoinGecko mapping for {symbol}")
-        return None
-
-    url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {
-        "ids": coin,
-        "vs_currencies": "usd",
-        "x_cg_demo_api_key": COINGECKO_API_KEY
-    }
-
+    coin = mapping.get(symbol, symbol.lower().replace("-usd", ""))
+    print(f"🪙 Trying CoinGecko API for {coin}")
     try:
-        print(f"🪙 Trying CoinGecko API for {coin}")
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-
-        if coin not in data or "usd" not in data[coin]:
-            print(f"❌ No valid price data for {symbol}")
+        url = (
+            f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
+            f"?vs_currency=usd&days={LOOKBACK}&interval=hourly&x_cg_demo_api_key={COINGECKO_API_KEY}"
+        )
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if "prices" not in data:
             return None
-
-        price = data[coin]["usd"]
-        dates = pd.date_range(datetime.now() - timedelta(days=90), periods=90, freq="D")
-        df = pd.DataFrame({"Close": [price] * len(dates)}, index=dates)
-        print(f"✅ Successfully fetched {symbol} data from CoinGecko (demo mode)")
+        df = pd.DataFrame(data["prices"], columns=["timestamp", "price"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
         return df
-
     except Exception as e:
         print(f"❌ CoinGecko error for {symbol}: {e}")
         return None
 
 
-# ======================
-# ⚙️ Helper: fetch from Binance
-# ======================
-def fetch_from_binance(symbol, retries=3):
-    binance_map = {
-        "BTC-USD": "BTCUSDT",
-        "ETH-USD": "ETHUSDT",
-        "XRP-USD": "XRPUSDT",
-        "GALA-USD": "GALAUSDT"
-    }
-
-    pair = binance_map.get(symbol)
-    if not pair:
-        print(f"⚠️ No Binance mapping for {symbol}")
+def fetch_from_binance(symbol):
+    """Try Binance API fallback"""
+    print(f"📡 Trying Binance API for {symbol}")
+    pair = symbol.replace("-USD", "USDT")
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit=1000"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        df = pd.DataFrame(data, columns=[
+            "time", "open", "high", "low", "close", "volume",
+            "_", "_", "_", "_", "_", "_"
+        ])
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        df.set_index("time", inplace=True)
+        df["price"] = df["close"].astype(float)
+        return df[["price"]]
+    except Exception as e:
+        print(f"❌ Binance error for {symbol}: {e}")
         return None
 
-    url = f"https://api.binance.com/api/v3/klines"
-    params = {"symbol": pair, "interval": "1h", "limit": 500}
 
-    print(f"🏦 Trying Binance API for {pair}")
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+def fetch_from_yahoo(symbol):
+    """Try Yahoo Finance fallback"""
+    print(f"📉 Falling back to Yahoo Finance for {symbol}")
+    try:
+        df = yf.download(symbol, period=f"{LOOKBACK}d", interval="1h", progress=False)
+        if df.empty:
+            return None
+        df = df.rename(columns={"Close": "price"})
+        return df[["price"]]
+    except Exception as e:
+        print(f"❌ Yahoo error for {symbol}: {e}")
+        return None
 
-            if not data:
-                print(f"⚠️ Empty Binance response for {symbol}, retry {attempt+1}/{retries}")
-                time.sleep(2)
-                continue
 
-            df = pd.DataFrame(
-                data,
-                columns=[
-                    "timestamp", "Open", "High", "Low", "Close", "Volume",
-                    "Close_time", "Quote_asset_volume", "Trades",
-                    "TBBAV", "TBQAV", "ignore"
-                ],
-            )
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df.set_index("timestamp", inplace=True)
-            df["Close"] = df["Close"].astype(float)
-            print(f"✅ Successfully fetched {symbol} data from Binance")
-            return df[["Close"]]
-
-        except Exception as e:
-            print(f"⚠️ Binance error for {symbol}: {e}")
-            time.sleep(2)
-
-    print(f"🚫 Failed to fetch data from Binance for {symbol}")
+def get_data(symbol):
+    """Get data from multiple sources"""
+    for fetcher in [fetch_from_coingecko, fetch_from_binance, fetch_from_yahoo]:
+        df = fetcher(symbol)
+        if df is not None and not df.empty:
+            return df
+    print(f"🚫 Failed to load data for {symbol} from all sources.")
     return None
 
 
-# ======================
-# ⚙️ Helper: fetch from Yahoo Finance
-# ======================
-def fetch_from_yahoo(symbol, retries=3):
-    print(f"📉 Falling back to Yahoo Finance for {symbol}")
-    for attempt in range(retries):
-        try:
-            df = yf.download(symbol, period="90d", interval="1h", progress=False)
-            if not df.empty:
+def generate_signals(df):
+    """Generate BUY/SELL signals"""
+    df["rsi"] = RSIIndicator(df["price"]).rsi()
+    macd = MACD(df["price"])
+    df["macd"] = macd.macd()
+    df["signal"] = macd.macd_signal()
+    bb = BollingerBands(df["price"])
+    df["bb_low"] = bb.bollinger_lband()
+    df["bb_high"] = bb.bollinger_hband()
+
+    latest = df.iloc[-1]
+    if latest["rsi"] < 30 and latest["macd"] > latest["signal"] and latest["price"] < latest["bb_low"]:
+        return "BUY"
+    elif latest["rsi"] > 70 and latest["macd"] < latest["signal"] and latest["price"] > latest["bb_high"]:
+        return "SELL"
+    return "HOLD"
+
+
+# === Main ===
+signals = {}
+for symbol in TICKERS:
+    print(f"📡 Fetching {symbol} data...")
+    df = get_data(symbol)
+    if df is not None and not df.empty:
+        signal = generate_signals(df)
+        signals[symbol] = signal
+        print(f"✅ {symbol} → {signal}")
+    else:
+        print(f"⚠️ No data for {symbol}, skipping...")
+
+# === Save results ===
+with open(LAST_FILE, "w") as f:
+    json.dump(signals, f, indent=2)
+
+with open(SIGNALS_FILE, "w") as f:
+    for k, v in signals.items():
+        f.write(f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} {k}: {v}\n")
+
+print("✅ Bot execution completed.")
