@@ -24,6 +24,13 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 os.makedirs(UTILS_DIR, exist_ok=True)
 
+# Clean up previous run outputs (to keep only current signals)
+for f in [SIGNALS_FILE, HOLDS_FILE]:
+    try:
+        open(f, "w").close()
+    except Exception:
+        pass
+
 # ---------------- HELPERS ----------------
 def fetch_price(symbol):
     """Try CoinGecko -> Binance -> Yahoo fallback."""
@@ -47,7 +54,7 @@ def fetch_price(symbol):
     except Exception as e:
         print(f"⚠️ CoinGecko failed for {symbol}: {e}")
 
-    # Binance
+    # Binance fallback
     try:
         r = requests.get(
             f"https://api.binance.com/api/v3/ticker/price?symbol={sym}USDT", timeout=10
@@ -58,7 +65,7 @@ def fetch_price(symbol):
     except Exception as e:
         print(f"⚠️ Binance failed for {symbol}: {e}")
 
-    # Yahoo
+    # Yahoo fallback
     try:
         r = requests.get(
             f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym}-USD",
