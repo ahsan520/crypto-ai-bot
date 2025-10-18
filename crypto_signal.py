@@ -1,5 +1,6 @@
 import os
 import json
+import yaml
 import requests
 import smtplib
 from email.mime.text import MIMEText
@@ -12,28 +13,48 @@ import joblib
 from pathlib import Path
 
 # ------------------------------------------------------------
-# 📦 CONFIGURATION
+# 📦 CONFIGURATION & SETUP
 # ------------------------------------------------------------
-LAST_SIGNALS_FILE = "last_signals.json"
-SIGNALS_TXT = "signals.txt"
-MODEL_FILE = "crypto_ai_model.pkl"
+ROOT_DIR = Path(__file__).parent
+UTILS_DIR = ROOT_DIR / "utils"
+UTILS_DIR.mkdir(exist_ok=True)
 
+CONFIG_FILE = ROOT_DIR / "crypto.yml"
+LAST_SIGNALS_FILE = UTILS_DIR / "last_signals.json"
+SIGNALS_TXT = UTILS_DIR / "signals.txt"
+MODEL_FILE = UTILS_DIR / "crypto_ai_model.pkl"
+
+# Default fallback values
+CONFIG_DEFAULTS = {
+    "symbols": ["BTC-USD", "GALA-USD", "XRP-USD"],
+    "interval": "30m",
+    "period": "60d",
+    "atr_window": 14,
+    "atr_multiplier": 1.5,
+}
+
+# Load YAML config if available
+if CONFIG_FILE.exists():
+    with open(CONFIG_FILE, "r") as f:
+        config_data = yaml.safe_load(f) or {}
+else:
+    print("⚠️ crypto.yml not found — using defaults.")
+    config_data = {}
+
+# Merge defaults
+config = {**CONFIG_DEFAULTS, **config_data}
+
+# Environment variables (kept from your original setup)
 ZAPIER_URL = os.getenv("ZAPIER_URL")
 SIGNAL_EMAIL = os.getenv("SIGNAL_EMAIL")
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 
-SYMBOLS = ["BTC-USD", "GALA-USD", "XRP-USD"]
-INTERVAL = "30m"
-PERIOD = "60d"
-ATR_WINDOW = 14
-ATR_MULTIPLIER = 1.5
-
 # ------------------------------------------------------------
 # ⚙️ UTILITY HELPERS
 # ------------------------------------------------------------
 def load_last_signals():
-    if os.path.exists(LAST_SIGNALS_FILE):
+    if LAST_SIGNALS_FILE.exists():
         try:
             with open(LAST_SIGNALS_FILE, "r") as f:
                 return json.load(f)
@@ -60,9 +81,10 @@ def build_features(df):
     df['bb_width'] = (df['bb_high'] - df['bb_low']) / df['bb_mid']
     df['percent_b'] = (df['Close'] - df['bb_low']) / (df['bb_high'] - df['bb_low'])
     df['volume_change'] = df['Volume'].pct_change().fillna(0)
-    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=ATR_WINDOW)
+    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=config["atr_window"])
     df['ATR'] = atr.average_true_range()
-    o = df['Open']; h = df['High']; l = df['Low']; c = df['Close']
+
+    o, h, l, c = df['Open'], df['High'], df['Low'], df['Close']
     body = (c - o).abs()
     candle_range = (h - l).replace(0, np.nan)
     upper_shadow = h - np.maximum(o, c)
@@ -72,32 +94,38 @@ def build_features(df):
     return df.dropna()
 
 def ensure_model(df):
-    if os.path.exists(MODEL_FILE):
+    if MODEL_FILE.exists():
         try:
             return joblib.load(MODEL_FILE)
         except:
             pass
+
     from sklearn.ensemble import RandomForestClassifier
     df['future_return'] = df['Close'].shift(-3) / df['Close'] - 1
     df = df.dropna()
     df['label'] = (df['future_return'] > 0.002).astype(int)
+
     feature_cols = ['rsi','macd','bb_mid','bb_high','bb_low','bb_width','percent_b','volume_change','shooting_star','hammer']
     X = df[feature_cols].fillna(0)
     y = df['label']
+
     model = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
     model.fit(X, y)
     joblib.dump(model, MODEL_FILE)
     return model
 
+# ------------------------------------------------------------
+# 📊 SIGNAL GENERATION
+# ------------------------------------------------------------
 def generate_signals():
     print("📡 Generating AI-based crypto signals ...")
     last_signals = load_last_signals()
     model = None
     new_signals = {}
 
-    for sym in SYMBOLS:
+    for sym in config["symbols"]:
         print(f"Downloading {sym} ...")
-        df = yf.download(sym, period=PERIOD, interval=INTERVAL, progress=False).dropna()
+        df = yf.download(sym, period=config["period"], interval=config["interval"], progress=False).dropna()
         if df.empty:
             print(f"⚠️ No data for {sym}")
             continue
@@ -112,18 +140,14 @@ def generate_signals():
         entry = (df['Close'] <= df['bb_low']) & (ai_pred == 1)
         exit_ = df['Close'] >= df['bb_high']
 
-        signal = None
+        signal = "HOLD"
         if len(entry) >= 2:
             if entry.iloc[-1] and not entry.iloc[-2]:
                 signal = "BUY"
             elif exit_.iloc[-1] and not exit_.iloc[-2]:
                 signal = "SELL"
 
-        if not signal:
-            signal = "HOLD"
-
         new_signals[sym] = signal
-
         print(f"🔹 {sym}: {signal}")
 
     return new_signals
@@ -186,7 +210,7 @@ def main():
         print(f" - {sym}: {sig}")
 
     save_last_signals(last_signals)
-    with open(SIGNALS_TXT, "w") as f:
+    with open(SIGNALS_TXT, "a") as f:
         for sym, sig in changed.items():
             f.write(f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} - {sym}: {sig}\n")
 
