@@ -3,9 +3,8 @@ name: Crypto AI Bot
 on:
   schedule:
     - cron: "*/30 * * * *"     # Every 30 minutes
-  workflow_dispatch:            # Allow manual trigger
+  workflow_dispatch:
 
-# ✅ Allow this workflow to push commits using GITHUB_TOKEN
 permissions:
   contents: write
 
@@ -14,19 +13,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ✅ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          persist-credentials: false   # We'll re-auth later for commit
+          persist-credentials: false
 
-      # ✅ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ✅ Cache pip dependencies
       - name: Cache pip packages
         id: cache-pip
         uses: actions/cache@v4
@@ -36,15 +32,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # ✅ Always install dependencies (cache speeds it up)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
+          pip install requests pandas numpy python-dotenv jupyter
+
+      # ✅ Convert notebook to Python
+      - name: Convert notebook to Python
+        run: |
+          if [ -f "crypto_ai_backtest_multi.ipynb" ]; then
+            echo "Converting crypto_ai_backtest_multi.ipynb → crypto_ai_backtest_multi.py ..."
+            jupyter nbconvert --to script crypto_ai_backtest_multi.ipynb --output crypto_ai_backtest_multi.py
+          fi
+
+      # ✅ Sync logic from backtest script into signal bot
+      - name: Sync logic into crypto_signal.py
+        run: |
+          if [ -f "crypto_ai_backtest_multi.py" ]; then
+            echo "Updating crypto_signal.py with latest logic..."
+            # Copy strategy or function definitions from backtest file into crypto_signal.py
+            echo "# --- AUTO-GENERATED FROM crypto_ai_backtest_multi.py ---" > crypto_signal.py
+            tail -n +1 crypto_ai_backtest_multi.py >> crypto_signal.py
+            echo "\n# --- END OF AUTO SYNC ---" >> crypto_signal.py
           else
-            echo "⚠️ requirements.txt not found, installing essentials..."
-            pip install requests pandas numpy python-dotenv
+            echo "⚠️ No backtest file found, skipping sync."
           fi
 
       # ✅ Run crypto signal bot
@@ -58,25 +69,19 @@ jobs:
           echo "Running crypto_signal.py ..."
           python crypto_signal.py || exit 1
 
-      # ✅ Commit and push last_signals.json for Colab verification
+      # ✅ Commit results
       - name: Commit and push signal file
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Checking for last_signals.json ..."
-          if [ -f "last_signals.json" ]; then
-            git config user.name "github-actions"
-            git config user.email "github-actions@github.com"
-            git pull origin main || true
-            git add last_signals.json
-            git commit -m "Update last_signals.json [skip ci]" || echo "No changes to commit"
-            git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
-          else
-            echo "⚠️ last_signals.json not found, skipping commit."
-          fi
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git pull origin main || true
+          git add last_signals.json crypto_ai_backtest_multi.py crypto_signal.py
+          git commit -m "Auto-update signal logic + last_signals.json [skip ci]" || echo "No changes"
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
 
-      # ✅ Upload artifacts (optional logs, CSVs, etc.)
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
