@@ -1,67 +1,64 @@
-#!/usr/bin/env python3
 import os
 import smtplib
 import requests
-import json
 from email.mime.text import MIMEText
-from datetime import datetime
+from email.mime.multipart import MIMEMultipart
 
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-SIGNAL_EMAIL = os.getenv("SIGNAL_EMAIL")
-ZAPIER_URL = os.getenv("ZAPIER_URL")
 
-def generate_signal():
-    now = datetime.utcnow()
-    signal = "BUY" if now.minute % 2 == 0 else "SELL"
-    price = 68000 + (1 if signal == "BUY" else -1) * 50
-    message = f"{datetime.now():%Y-%m-%d %H:%M:%S} UTC: {signal} BTC @ ${price}"
-    print("📈 Generated signal:", message)
-    return message, signal
+def send_alert(message: str):
+    zapier_url = os.getenv("ZAPIER_URL")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    signal_email = os.getenv("SIGNAL_EMAIL")
 
-def send_email(subject, body):
-    if not (SMTP_USER and SMTP_PASS and SIGNAL_EMAIL):
-        print("⚠️ Email not configured.")
-        return
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = SMTP_USER
-    msg["To"] = SIGNAL_EMAIL
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, SIGNAL_EMAIL, msg.as_string())
-        print("✅ Email sent.")
-    except Exception as e:
-        print(f"⚠️ Email failed: {e}")
+    print("🔍 Checking alert configuration...")
 
-def send_zapier_notification(message):
-    if not ZAPIER_URL:
-        print("⚠️ No Zapier URL configured.")
-        return
-    try:
-        r = requests.post(ZAPIER_URL, json={"text": message}, timeout=10)
-        if r.status_code == 200:
-            print("✅ Zapier notification sent.")
-        else:
-            print(f"⚠️ Zapier responded with {r.status_code}: {r.text}")
-    except Exception as e:
-        print(f"⚠️ Zapier failed: {e}")
+    zapier_success = False
 
-def save_signal_file(message, signal):
-    with open("signals.txt", "w") as f:
-        f.write(message + "\n")
-    with open("last_signal.json", "w") as f:
-        json.dump({"signal": signal, "timestamp": datetime.now().isoformat()}, f)
-    print("📁 Saved signals.txt and last_signal.json.")
+    # 1️⃣ Try Zapier first (if configured)
+    if zapier_url:
+        print("⚙️ ZAPIER_URL found → trying Zapier webhook...")
+        try:
+            response = requests.post(zapier_url, json={"text": message}, timeout=10)
+            if response.status_code == 200:
+                print("✅ Sent successfully via Zapier webhook.")
+                zapier_success = True
+            else:
+                print(f"⚠️ Zapier returned {response.status_code}: {response.text}")
+        except Exception as e:
+            print(f"❌ Zapier send error: {e}")
+    else:
+        print("⚠️ No Zapier URL configured. Will skip webhook and try SMTP.")
 
-def main():
-    print("🚀 Starting Crypto Bot...")
-    msg, signal = generate_signal()
-    save_signal_file(msg, signal)
-    send_zapier_notification(msg)
-    send_email(f"Crypto Signal Alert: {signal}", msg)
-    print("✅ Done.")
+    # 2️⃣ Only use SMTP if Zapier not configured OR Zapier failed
+    if not zapier_success and smtp_user and smtp_pass and signal_email:
+        print(f"📧 Falling back to email alert → {signal_email}")
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = smtp_user
+            msg["To"] = signal_email
+            msg["Subject"] = "Crypto AI Bot Signal"
+            msg.attach(MIMEText(message, "plain"))
 
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+
+            print("✅ Alert email sent successfully via SMTP.")
+            return "smtp"
+        except Exception as e:
+            print(f"❌ SMTP send error: {e}")
+            return "smtp_failed"
+
+    elif zapier_success:
+        return "zapier"
+    else:
+        print("⚠️ No alert method configured (ZAPIER_URL or SMTP_USER missing).")
+        return "none"
+
+
+# Example usage:
 if __name__ == "__main__":
-    main()
+    signal_message = "BTC BUY signal detected at 65,200 USD"
+    result = send_alert(signal_message)
+    print(f"::notice::Alert method used: {result.upper()}")
