@@ -3,7 +3,7 @@ name: Crypto AI Bot
 on:
   schedule:
     - cron: "*/30 * * * *"     # Every 30 minutes
-  workflow_dispatch:            # Allow manual run from GitHub UI
+  workflow_dispatch:            # Manual run support
 
 jobs:
   run-signals:
@@ -30,14 +30,24 @@ jobs:
           SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
           ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
         run: |
-          python crypto_signal.py | tee run_log.txt
+          echo "===== Starting Crypto Bot Run =====" | tee run_log.txt
+          date | tee -a run_log.txt
+          python crypto_signal.py 2>&1 | tee -a run_log.txt
+          echo "===== End of Run =====" | tee -a run_log.txt
 
-      - name: Upload signal results and logs
+      - name: Ensure run_log.txt exists
+        run: |
+          if [ ! -f run_log.txt ]; then
+            echo "No run_log.txt found. Creating placeholder log." > run_log.txt
+          fi
+
+      - name: Upload logs and results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: crypto-results
           path: |
-            *.csv
-            *.txt
             run_log.txt
-          if-no-files-found: ignore
+            last_signal.json
+            signals.txt
+            *.csv
+          if-no-files-found: warn
