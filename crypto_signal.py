@@ -32,28 +32,40 @@ except ImportError:
 # ========== FETCH FUNCTIONS ==========
 
 def fetch_from_coingecko(coin):
-    """Fetch historical data from CoinGecko (90 days, hourly)."""
+    """Fetch historical data from CoinGecko (90 days, hourly) using API key headers."""
     try:
         print(f"🪙 Trying CoinGecko API for {coin}")
         url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
         params = {
             "vs_currency": "usd",
             "days": "90",
-            "interval": "hourly",
-            "x_cg_demo_api_key": COINGECKO_API_KEY
+            "interval": "hourly"
         }
-        response = requests.get(url, params=params, timeout=20)
+        headers = {
+            "accept": "application/json",
+            "x-cg-pro-api-key": COINGECKO_API_KEY  # ✅ Correct header usage
+        }
+
+        response = requests.get(url, headers=headers, params=params, timeout=20)
         response.raise_for_status()
         data = response.json()
+
         if "prices" not in data:
             raise ValueError("❌ No 'prices' key in CoinGecko response")
-        df = pd.DataFrame(data["prices"], columns=["timestamp", "close"])
+
+        df = pd.DataFrame(data["prices"], columns=["timestamp", "price"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df["close"] = df["close"].astype(float)
+        df["close"] = df["price"].astype(float)
+        df.drop(columns=["price"], inplace=True)
         return df
+
+    except requests.exceptions.HTTPError as e:
+        print(f"❌ CoinGecko HTTP error for {coin}: {e}")
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ CoinGecko connection error for {coin}: {e}")
     except Exception as e:
         print(f"❌ CoinGecko error for {coin}: {e}")
-        return None
+    return None
 
 
 def fetch_from_binance(symbol):
@@ -63,7 +75,7 @@ def fetch_from_binance(symbol):
         return None
     try:
         print(f"📊 Trying Binance API for {symbol}")
-        client = Client()  # create on demand
+        client = Client()  # Create on demand
         klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "90 days ago UTC")
         if not klines:
             return None
@@ -139,7 +151,7 @@ def generate_signal(df):
         signal = "HOLD"
         reason = ""
 
-        # Simple logic
+        # Basic rule set
         if latest["rsi"] < 30 and latest["macd"] > latest["signal"]:
             signal = "BUY"
             reason = "RSI oversold + MACD crossover"
