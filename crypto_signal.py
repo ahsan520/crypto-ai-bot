@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-from binance.client import Client
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import BollingerBands
@@ -23,8 +22,12 @@ OUTPUT_JSON = "utils/last_signals.json"
 OUTPUT_TXT = "utils/signals.txt"
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
-# Binance client for fallback
-binance_client = Client()
+# Lazy import Binance client (only if available)
+try:
+    from binance.client import Client
+except ImportError:
+    Client = None
+
 
 # ========== FETCH FUNCTIONS ==========
 
@@ -39,7 +42,7 @@ def fetch_from_coingecko(coin):
             "interval": "hourly",
             "x_cg_demo_api_key": COINGECKO_API_KEY
         }
-        response = requests.get(url, params=params, timeout=15)
+        response = requests.get(url, params=params, timeout=20)
         response.raise_for_status()
         data = response.json()
         if "prices" not in data:
@@ -55,9 +58,13 @@ def fetch_from_coingecko(coin):
 
 def fetch_from_binance(symbol):
     """Fetch last 90 days of hourly candles from Binance."""
+    if Client is None:
+        print("⚠️ Binance library not available.")
+        return None
     try:
         print(f"📊 Trying Binance API for {symbol}")
-        klines = binance_client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "90 days ago UTC")
+        client = Client()  # create on demand
+        klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "90 days ago UTC")
         if not klines:
             return None
         df = pd.DataFrame(klines, columns=[
@@ -152,7 +159,6 @@ def main():
     print("🚀 Starting Crypto AI Bot...")
     signals = {}
 
-    # Prepare output
     os.makedirs("utils", exist_ok=True)
     open(OUTPUT_TXT, "w").close()
 
