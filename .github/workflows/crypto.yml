@@ -2,7 +2,7 @@ name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "0 * * * *" # Runs hourly
+    - cron: "0 * * * *" # hourly
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: ⚡ Restore pip cache
         uses: actions/cache@v4
@@ -29,97 +29,43 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || echo "⚠️ requirements.txt not found, installing manually..."
           pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy python-binance
 
-      - name: 🧹 Prepare utils directory
-        run: |
-          mkdir -p utils/signals
-          echo "{}" > utils/last_signals.json
-          echo "" > utils/signals/signals.txt
-          echo "" > utils/signals/holds.txt
-
-      - name: 🔑 Set up environment variables
+      - name: 🔑 Set up environment
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
-        run: echo "✅ Environment variables configured."
+        run: echo "✅ Environment ready."
 
       - name: 🚀 Run Crypto AI Bot
         env:
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
         run: |
-          echo "🚀 Starting Crypto AI Bot..."
           python crypto_signal.py
+
+      - name: 💾 Always commit results (even if only HOLD)
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+          git pull origin main || true
+          git add utils/last_signals.json utils/signals/*.txt
+          git commit -m "🤖 Update signals summary [skip ci]" || echo "No changes to commit."
+          git push origin main || echo "No push needed."
 
       - name: 🧠 Check for BUY/SELL signals
         id: check_signals
         run: |
-          if grep -q "BUY" utils/signals/signals.txt || grep -q "SELL" utils/signals/signals.txt; then
+          if grep -qE "BUY|SELL" utils/signals/signals.txt; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 🌐 Send to Zapier Webhook (primary)
-        if: steps.check_signals.outputs.found == 'true'
-        id: zapier
-        run: |
-          echo "🔗 Sending BUY/SELL signals to Zapier..."
-          response=$(curl -s -o response.txt -w "%{http_code}" -X POST \
-            -H "Content-Type: application/json" \
-            -d "{\"text\": \"$(cat utils/signals/signals.txt | sed 's/\"/\\"/g')\"}" \
-            "${{ secrets.ZAPIER_URL }}" || true)
-
-          echo "Zapier response code: $response"
-          if [ "$response" -ge 200 ] && [ "$response" -lt 300 ]; then
-            echo "zapier_success=true" >> $GITHUB_OUTPUT
-          else
-            echo "zapier_success=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: 💌 Send Email Fallback (if Zapier fails)
-        if: steps.zapier.outputs.zapier_success == 'false' && steps.check_signals.outputs.found == 'true'
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 587
-          username: ${{ secrets.EMAIL_SENDER }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "🚨 Crypto Alert — BUY/SELL Signal (Zapier Fallback)"
-          to: ${{ secrets.EMAIL_TO }}
-          from: "Crypto AI Bot <${{ secrets.EMAIL_SENDER }}>"
-          body: |
-            📊 Zapier Webhook failed — sending fallback email!
-
-            🪙 Signals:
-            $(cat utils/signals/signals.txt)
-
-            🕒 Timestamp: ${{ github.run_id }}
-            Repository: ${{ github.repository }}
-          secure: true
-
-      - name: 💾 Commit and push updates (only if signals exist)
+      - name: 📧 Send BUY/SELL alert
         if: steps.check_signals.outputs.found == 'true'
         run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "GitHub Actions"
-          git pull origin main || true
-          git add utils/last_signals.json utils/signals/signals.txt utils/signals/holds.txt
-          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit."
-          git push origin main || echo "No push needed."
-
-      - name: 🧾 Display summary
-        run: |
-          echo "📊 ===== SIGNAL SUMMARY ====="
-          cat utils/last_signals.json || echo "{}"
-          echo ""
-          echo "🪙 Recent BUY/SELL signals:"
-          cat utils/signals/signals.txt || echo "No buy/sell signals found."
-          echo ""
-          echo "⚪ HOLD signals:"
-          cat utils/signals/holds.txt || echo "No holds found."
+          echo "📨 BUY/SELL signals detected — triggering webhook/email."
