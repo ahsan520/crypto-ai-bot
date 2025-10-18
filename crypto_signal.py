@@ -1,236 +1,155 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import ta
-import joblib
-import os, json, requests, smtplib
+import os, requests, smtplib, json, numpy as np, pandas as pd, yfinance as yf, ta
 from datetime import datetime
-from pathlib import Path
 from email.mime.text import MIMEText
 from sklearn.ensemble import RandomForestClassifier
 
 # ---------------- CONFIG ----------------
-SYMBOLS = ["BTC", "ETH", "XRP", "GALA"]
+SYMBOLS = ["BTC", "ETH", "ADA", "DOGE", "SOL", "XRP"]
+PERIOD = "60d"
 INTERVAL = "1h"
-PERIOD = "90d"
-MODEL_FILE = "crypto_ai_model.pkl"
-UTILS_DIR = "utils"
-SIGNALS_DIR = f"{UTILS_DIR}/signals"
-SIGNALS_FILE = f"{SIGNALS_DIR}/signals.txt"
-HOLDS_FILE = f"{SIGNALS_DIR}/holds.txt"
-LAST_SIGNALS_FILE = f"{UTILS_DIR}/last_signals.json"
-SUMMARY_FILE = f"{UTILS_DIR}/summary.json"
-ATR_WINDOW = 14
-ATR_MULTIPLIER = 1.5
 
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_TO = os.getenv("EMAIL_TO")
-# ----------------------------------------
+ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK", "https://hooks.zapier.com/hooks/catch/XXXXXX/XXXXXX")
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "alert@example.com")
+SMTP_PASS = os.getenv("SMTP_PASS", "password")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
-os.makedirs(SIGNALS_DIR, exist_ok=True)
-for f in [SIGNALS_FILE, HOLDS_FILE, SUMMARY_FILE]:
+# ------------- DATA FETCHERS -------------
+def fetch_yahoo(sym):
     try:
-        open(f, "a").close()
-    except Exception:
-        pass
-
-
-# ---------------- HELPERS ----------------
-def fetch_price(symbol):
-    """Try Yahoo → CoinGecko → Binance fallback."""
-    sym = symbol.upper()
-
-    # Yahoo Finance
-    try:
-        r = requests.get(
-            f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym}-USD", timeout=10
-        )
-        d = r.json()
-        return float(d["quoteResponse"]["result"][0]["regularMarketPrice"])
+        df = yf.download(f"{sym}-USD", period=PERIOD, interval=INTERVAL, progress=False)
+        if not df.empty:
+            return df.dropna()
     except Exception as e:
-        print(f"⚠️ Yahoo failed for {symbol}: {e}")
-
-    # CoinGecko
-    try:
-        headers = {"accept": "application/json"}
-        if COINGECKO_API_KEY:
-            headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
-        id_map = {"BTC": "bitcoin", "ETH": "ethereum", "XRP": "ripple", "GALA": "gala"}
-        if sym in id_map:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": id_map[sym], "vs_currencies": "usd"},
-                headers=headers,
-                timeout=10,
-            )
-            d = r.json()
-            if id_map[sym] in d:
-                return float(d[id_map[sym]]["usd"])
-    except Exception as e:
-        print(f"⚠️ CoinGecko failed for {symbol}: {e}")
-
-    # Binance
-    try:
-        r = requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={sym}USDT", timeout=10
-        )
-        d = r.json()
-        if "price" in d:
-            return float(d["price"])
-    except Exception as e:
-        print(f"⚠️ Binance failed for {symbol}: {e}")
-
+        print(f"⚠️ Yahoo failed for {sym}: {e}")
     return None
 
+def fetch_coingecko(sym):
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{sym.lower()}/market_chart?vs_currency=usd&days=60&interval=hourly"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        prices = pd.DataFrame(data["prices"], columns=["timestamp", "Close"])
+        prices["Date"] = pd.to_datetime(prices["timestamp"], unit="ms")
+        prices.set_index("Date", inplace=True)
+        return prices
+    except Exception as e:
+        print(f"⚠️ CoinGecko failed for {sym}: {e}")
+    return None
 
+def fetch_binance(sym):
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={sym.upper()}USDT&interval=1h&limit=720"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        df = pd.DataFrame(data, columns=["Time", "Open", "High", "Low", "Close", "Vol", "_", "_", "_", "_", "_", "_"])
+        df["Date"] = pd.to_datetime(df["Time"], unit="ms")
+        df["Close"] = df["Close"].astype(float)
+        df.set_index("Date", inplace=True)
+        return df[["Close"]]
+    except Exception as e:
+        print(f"⚠️ Binance failed for {sym}: {e}")
+    return None
+
+def fetch_data(sym):
+    for fetcher in [fetch_yahoo, fetch_coingecko, fetch_binance]:
+        df = fetcher(sym)
+        if df is not None and not df.empty:
+            print(f"✅ Data fetched for {sym} via {fetcher.__name__}")
+            return df
+    print(f"❌ Failed to fetch data for {sym}")
+    return None
+
+# ------------- FEATURES -----------------
 def build_features(df):
     df = df.copy()
-    df["rsi"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
-    macd = ta.trend.MACD(df["Close"])
+    close = df["Close"].squeeze()
+    df["rsi"] = ta.momentum.RSIIndicator(close).rsi()
+    macd = ta.trend.MACD(close)
     df["macd"] = macd.macd()
-    bb = ta.volatility.BollingerBands(df["Close"])
-    df["bb_high"] = bb.bollinger_hband()
-    df["bb_low"] = bb.bollinger_lband()
-    df["bb_width"] = (df["bb_high"] - df["bb_low"]) / df["Close"]
-    df["percent_b"] = (df["Close"] - df["bb_low"]) / (df["bb_high"] - df["bb_low"])
-    atr = ta.volatility.AverageTrueRange(df["High"], df["Low"], df["Close"], window=ATR_WINDOW)
-    df["ATR"] = atr.average_true_range()
-    return df.dropna()
-
-
-def send_notification(message, subject="Crypto Signal Alert"):
-    """Try Zapier webhook, fallback to SMTP."""
-    # 1️⃣ Try Zapier
-    if ZAPIER_WEBHOOK_URL:
-        try:
-            r = requests.post(ZAPIER_WEBHOOK_URL, json={"text": message}, timeout=10)
-            if r.status_code == 200:
-                print("✅ Sent via Zapier webhook.")
-                return
-        except Exception as e:
-            print(f"⚠️ Zapier failed: {e}")
-
-    # 2️⃣ Fallback: SMTP email
-    if EMAIL_SENDER and EMAIL_PASSWORD and EMAIL_TO:
-        try:
-            msg = MIMEText(message)
-            msg["Subject"] = subject
-            msg["From"] = EMAIL_SENDER
-            msg["To"] = EMAIL_TO
-
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_SENDER, EMAIL_TO, msg.as_string())
-            server.quit()
-            print("📧 Email sent successfully.")
-        except Exception as e:
-            print(f"⚠️ Email send failed: {e}")
-
-
-def load_last_signals():
-    p = Path(LAST_SIGNALS_FILE)
-    if p.exists():
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return {}
-    return {}
-
-
-def save_last_signals(d):
-    Path(LAST_SIGNALS_FILE).write_text(json.dumps(d, indent=2))
-
-
-def ensure_model(train_df):
-    """Train fallback ML model if missing."""
-    if os.path.exists(MODEL_FILE):
-        try:
-            return joblib.load(MODEL_FILE)
-        except Exception as e:
-            print(f"⚠️ Model load failed: {e}")
-
-    print("🚀 Training lightweight RandomForest model...")
-    df = train_df.copy()
-    df["future_return"] = df["Close"].shift(-3) / df["Close"] - 1
+    df["macd_signal"] = macd.macd_signal()
+    df["ema_fast"] = ta.trend.EMAIndicator(close, 12).ema_indicator()
+    df["ema_slow"] = ta.trend.EMAIndicator(close, 26).ema_indicator()
+    df["ema_crossover"] = df["ema_fast"] - df["ema_slow"]
     df.dropna(inplace=True)
-    df["label"] = (df["future_return"] > 0.002).astype(int)
-    features = ["rsi", "macd", "bb_high", "bb_low", "bb_width", "percent_b", "ATR"]
-    X, y = df[features].fillna(0), df["label"]
+    return df
 
-    model = RandomForestClassifier(n_estimators=120, max_depth=6, random_state=42)
-    model.fit(X, y)
-    joblib.dump(model, MODEL_FILE)
-    print("✅ Model trained and saved.")
-    return model
+# ------------- AI MODEL -----------------
+def ai_predict(df):
+    df = df.copy()
+    df["target"] = np.where(df["Close"].shift(-1) > df["Close"], 1, 0)
+    features = ["rsi", "macd", "macd_signal", "ema_fast", "ema_slow", "ema_crossover"]
 
+    model = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
+    model.fit(df[features][:-1], df["target"][:-1])
 
+    df["pred"] = model.predict(df[features])
+    df["prob"] = model.predict_proba(df[features])[:, 1]  # Probability of upward move
+    return df
+
+# ------------- ALERTS -------------------
+def send_alert(sym, signal, price, confidence):
+    msg = f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} — {sym} {signal.upper()} signal at ${price:.2f} (Confidence: {confidence:.1f}%)"
+    print(f"🚨 {msg}")
+
+    # Try Zapier first
+    try:
+        requests.post(ZAPIER_WEBHOOK, json={"symbol": sym, "signal": signal, "price": price, "confidence": confidence})
+        print("✅ Sent to Zapier webhook")
+        return
+    except Exception as e:
+        print(f"⚠️ Zapier failed: {e}")
+
+    # Fallback Email via SMTP
+    try:
+        s = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        s.starttls()
+        s.login(SMTP_EMAIL, SMTP_PASS)
+        s.sendmail(SMTP_EMAIL, SMTP_EMAIL, msg)
+        s.quit()
+        print("📧 Sent email fallback")
+    except Exception as e:
+        print(f"⚠️ Email failed: {e}")
+
+# ------------- MAIN ---------------------
 def analyze():
-    last_signals = load_last_signals()
-    new_signals = {}
-    summary = {"BUY": [], "SELL": [], "HOLD": []}
-    model = None
-
     for sym in SYMBOLS:
         print(f"📊 Processing {sym}...")
-        try:
-            df = yf.download(f"{sym}-USD", period=PERIOD, interval=INTERVAL, progress=False).dropna()
-        except Exception as e:
-            print(f"⚠️ Data fetch failed for {sym}: {e}")
-            continue
-
-        if df.empty:
-            print(f"⚠️ No data for {sym}")
+        df = fetch_data(sym)
+        if df is None:
             continue
 
         df = build_features(df)
-        if model is None:
-            model = ensure_model(df)
+        df = ai_predict(df)
 
-        X = df[["rsi", "macd", "bb_high", "bb_low", "bb_width", "percent_b", "ATR"]].fillna(0)
-        preds = model.predict(X)
-        df["ai_signal"] = preds
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        signal = None
 
-        # Technical + AI combo decision
-        rsi, macd_val, prev_macd = df["rsi"].iloc[-1], df["macd"].iloc[-1], df["macd"].iloc[-2]
-        if preds[-1] == 1 and rsi < 70 and macd_val > prev_macd:
-            signal = "BUY"
-        elif rsi > 65 and macd_val < prev_macd:
-            signal = "SELL"
-        else:
-            signal = "HOLD"
-
-        price = fetch_price(sym) or df["Close"].iloc[-1]
-        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-        entry = f"{ts} | {sym} | {signal} | ${price:.4f}"
-
-        if signal in ["BUY", "SELL"]:
-            with open(SIGNALS_FILE, "a") as f:
-                f.write(entry + "\n")
-        else:
-            with open(HOLDS_FILE, "a") as f:
-                f.write(entry + "\n")
-
-        new_signals[sym] = {"signal": signal, "price": price, "time": ts}
-        summary[signal].append({"symbol": sym, "price": price, "time": ts})
-        print(entry)
-
-        # Notify only on signal change or new buy/sell
+        # --- BUY ---
         if (
-            sym not in last_signals
-            or last_signals[sym]["signal"] != signal
-            or signal in ["BUY", "SELL"]
+            last["rsi"] < 30
+            and last["macd"] > last["macd_signal"]
+            and last["ema_fast"] > last["ema_slow"]
+            and prev["ema_fast"] <= prev["ema_slow"]
+            and last["pred"] == 1
         ):
-            send_notification(entry, subject=f"Crypto {signal} Signal for {sym}")
+            signal = "buy"
 
-    # Save outputs
-    save_last_signals(new_signals)
-    Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2))
-    print("✅ Signals processed and summary saved.")
+        # --- SELL ---
+        elif (
+            last["rsi"] > 70
+            and last["macd"] < last["macd_signal"]
+            and last["ema_fast"] < last["ema_slow"]
+            and prev["ema_fast"] >= prev["ema_slow"]
+            and last["pred"] == 0
+        ):
+            signal = "sell"
 
+        if signal:
+            confidence = last["prob"] * 100
+            send_alert(sym, signal, last["Close"], confidence)
 
 if __name__ == "__main__":
+    print("🚀 Running crypto_signal.py...")
     analyze()
