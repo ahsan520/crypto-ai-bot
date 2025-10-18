@@ -7,6 +7,9 @@ scikit-learn>=1.5.0
 yfinance>=0.2.40
 ta>=0.11.0
 
+# Config & I/O
+PyYAML>=6.0.2
+
 # Email + Notifications
 requests>=2.32.3
 smtplib3==0.1.0
