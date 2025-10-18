@@ -40,7 +40,6 @@ jobs:
 
       - name: 🧹 Prepare utils directory
         run: |
-          mkdir -p utils
           mkdir -p utils/signals
           [[ -f utils/last_signals.json ]] || echo "{}" > utils/last_signals.json
           [[ -f utils/signals/signals.txt ]] || echo "" > utils/signals/signals.txt
@@ -81,16 +80,16 @@ jobs:
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 💾 Commit and push updates (only if BUY/SELL found)
-        if: steps.check_signals.outputs.found == 'true'
+      # ✅ Always push updated JSON + signal files (even for HOLD only)
+      - name: 💾 Commit and push updates
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "GitHub Actions"
+          git config --global user.email "cryptoai-bot@users.noreply.github.com"
+          git config --global user.name "Crypto AI Bot"
           git pull origin main || true
           git add utils/last_signals.json utils/summary.json utils/signals/signals.txt utils/signals/holds.txt || true
-          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit."
+          git commit -m "🤖 Auto-update: crypto signals summary [skip ci]" || echo "No changes to commit."
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped."
 
       - name: 🧾 Display summary (logs)
