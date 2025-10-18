@@ -35,7 +35,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # ✅ Always install dependencies
+      # ✅ Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -46,17 +46,17 @@ jobs:
             pip install yfinance pandas numpy ta joblib matplotlib scikit-learn vectorbt
           fi
 
-      # ✅ Convert notebook to .py if exists
+      # ✅ Convert notebook to Python if present
       - name: Convert notebook to Python
         run: |
           if [ -f "crypto_ai_backtest_multi.ipynb" ]; then
-            echo "🧠 Converting crypto_ai_backtest_multi.ipynb -> crypto_ai_backtest_multi.py"
+            echo "🧠 Converting notebook -> crypto_ai_backtest_multi.py"
             jupyter nbconvert --to script crypto_ai_backtest_multi.ipynb
           else
             echo "⚠️ Notebook not found; skipping conversion."
           fi
 
-      # ✅ Create utils folder & sync script if missing
+      # ✅ Create utils folder and sync script if missing
       - name: Ensure utils/sync_strategy.py exists
         run: |
           mkdir -p utils
@@ -110,6 +110,14 @@ EOF
           fi
           echo "✅ sync_strategy.py ready."
 
+      # ✅ Clean up previous signal files
+      - name: Clean old signals
+        run: |
+          mkdir -p utils
+          rm -f utils/last_signals.json utils/signals.txt
+          echo "{}" > utils/last_signals.json
+          echo "🧹 Cleared old signals."
+
       # ✅ Run sync to update crypto_signal.py
       - name: 🔄 Sync latest strategy into crypto_signal.py
         run: |
@@ -126,8 +134,8 @@ EOF
           echo "🚀 Running crypto_signal.py ..."
           python crypto_signal.py || exit 1
 
-      # ✅ Commit updated signal files
-      - name: Commit and push updates
+      # ✅ Commit and push updated signal files
+      - name: Commit and push signal files
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -136,17 +144,19 @@ EOF
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git pull origin main || true
-          git add last_signals.json crypto_signal.py || true
+          mkdir -p utils
+          git add utils/last_signals.json utils/signals.txt crypto_signal.py || true
           git commit -m "Auto-update: signals + strategy [skip ci]" || echo "No changes to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
 
-      # ✅ Upload artifacts (optional)
+      # ✅ Upload workflow artifacts (optional)
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: crypto-results
           path: |
+            utils/last_signals.json
+            utils/signals.txt
             *.csv
             *.txt
-            last_signals.json
           if-no-files-found: ignore
