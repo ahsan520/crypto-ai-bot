@@ -8,12 +8,16 @@ from datetime import datetime
 def read_signal():
     """Read BUY/HOLD/SELL signal from last_signal.json or signals.txt"""
     signal = None
+    extra_info = {}
 
     if os.path.exists("last_signal.json"):
         try:
             with open("last_signal.json") as f:
                 data = json.load(f)
+                print("📁 Contents of last_signal.json:")
+                print(json.dumps(data, indent=2))
                 signal = str(data.get("signal", "")).strip().upper()
+                extra_info = data
         except Exception as e:
             print(f"⚠️ Error reading last_signal.json: {e}")
 
@@ -21,24 +25,28 @@ def read_signal():
         try:
             with open("signals.txt") as f:
                 signal = f.read().strip().upper()
+                print(f"📁 Contents of signals.txt: {signal}")
         except Exception as e:
             print(f"⚠️ Error reading signals.txt: {e}")
 
-    # Default to NONE if empty or missing
-    if not signal:
+    if not signal or signal not in ["BUY", "SELL", "HOLD"]:
         signal = "NONE"
 
-    return signal
+    return signal, extra_info
 
 
-def send_via_zapier(signal_text):
+def send_via_zapier(signal_text, timestamp, extra_info=None):
     zapier_url = os.getenv("ZAPIER_URL")
     if not zapier_url:
         print("⚠️ ZAPIER_URL not set. Skipping Zapier notification.")
         return False
 
     try:
-        payload = {"signal": signal_text}
+        payload = {
+            "signal": signal_text,
+            "time": timestamp,
+            "details": extra_info or {}
+        }
         print(f"📡 Sending signal '{signal_text}' to Zapier...")
         response = requests.post(zapier_url, json=payload)
         if response.status_code == 200:
@@ -52,7 +60,7 @@ def send_via_zapier(signal_text):
         return False
 
 
-def send_via_email(signal_text):
+def send_via_email(signal_text, timestamp, extra_info=None):
     smtp_user = os.getenv("SMTP_USER")
     smtp_pass = os.getenv("SMTP_PASS")
     signal_email = os.getenv("SIGNAL_EMAIL")
@@ -62,12 +70,15 @@ def send_via_email(signal_text):
         return False
 
     try:
-        print(f"📨 Sending email alert: {signal_text}")
-        msg = MIMEText(f"Crypto Signal: {signal_text}", "plain")
-        msg["Subject"] = f"Crypto Signal: {signal_text}"
+        subject = f"Crypto Signal: {signal_text}"
+        body = f"Crypto Signal: {signal_text}\nTime: {timestamp}\n\nDetails:\n{json.dumps(extra_info or {}, indent=2)}"
+
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
         msg["From"] = smtp_user
         msg["To"] = signal_email
 
+        print(f"📨 Sending email alert: {signal_text}")
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
             server.login(smtp_user, smtp_pass)
@@ -81,18 +92,22 @@ def send_via_email(signal_text):
 
 
 def main():
-    signal = read_signal()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    signal, extra_info = read_signal()
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
     print(f"🪙 Current Signal: {signal} at {timestamp}")
 
     alert_method = "NONE"
 
-    if send_via_zapier(signal):
-        alert_method = "ZAPIER"
+    if signal in ["BUY", "SELL"]:
+        if send_via_zapier(signal, timestamp, extra_info):
+            alert_method = "ZAPIER"
+        else:
+            print("🔁 Zapier failed or not set. Trying email fallback...")
+            if send_via_email(signal, timestamp, extra_info):
+                alert_method = "SMTP"
     else:
-        print("🔁 Zapier failed or not set. Using email fallback...")
-        if send_via_email(signal):
-            alert_method = "SMTP"
+        print(f"ℹ️ Signal is '{signal}'. No alert sent.")
 
     print(f"📊 Alert method used: {alert_method}")
 
