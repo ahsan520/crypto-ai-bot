@@ -1,62 +1,78 @@
-name: 🤖 Crypto AI Bot
+name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
+    - cron: "0 * * * *" # runs hourly
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  crypto-ai:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧩 Checkout repo
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          cache: "pip"  # ✅ Cache pip dependencies automatically
+          python-version: '3.10'
 
-      - name: 🧰 Install dependencies
+      - name: ⚡ Restore pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade setuptools wheel
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install PyYAML yfinance pandas numpy ta scikit-learn joblib requests
+          pip install -r requirements.txt
+          pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy
 
-      - name: 🧹 Cleanup old signals
+      - name: 🧹 Ensure utils folder and clear old files
         run: |
           mkdir -p utils
           echo "{}" > utils/last_signals.json
           echo "" > utils/signals.txt
-          echo "🧹 Cleared old signal files before run."
+
+      - name: 🔑 Set up environment variables
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: echo "✅ Email environment variables configured."
 
       - name: 🚀 Run Crypto AI Bot
-        env:
-          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
-          SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
           echo "🚀 Starting Crypto AI Bot..."
-          python crypto_signal.py || echo "⚠️ Bot failed."
+          python crypto_signal.py
 
-      - name: 💾 Commit updates
+      - name: 🧠 Check for BUY/SELL signals
+        id: check_signals
         run: |
-          echo "💾 Committing updates..."
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add utils/last_signals.json utils/signals.txt || true
-          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit"
-          git push
+          if grep -q "BUY" utils/signals.txt || grep -q "SELL" utils/signals.txt; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: 📊 Show signal summary
+      - name: 💾 Commit and push updates (only if signals exist)
+        if: steps.check_signals.outputs.found == 'true'
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+          git pull origin main
+          git add utils/last_signals.json utils/signals.txt
+          git commit -m "🤖 Auto-update: crypto signals [skip ci]"
+          git push origin main
+
+      - name: 🧾 Display summary
         run: |
           echo "📊 ===== SIGNAL SUMMARY ====="
-          echo "🪙 Contents of utils/last_signals.json:"
           cat utils/last_signals.json || echo "{}"
-          echo "📜 Recent signals:"
-          tail -n 10 utils/signals.txt || echo "No recent signals found."
-          echo "✅ Bot execution completed."
+          echo ""
+          echo "🪙 Recent signals:"
+          cat utils/signals.txt || echo "No signals found."
