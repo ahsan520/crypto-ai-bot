@@ -17,6 +17,7 @@ UTILS_DIR = "utils"
 SIGNALS_FILE = f"{UTILS_DIR}/signals.txt"
 HOLDS_FILE = f"{UTILS_DIR}/holds.txt"
 LAST_SIGNALS_FILE = f"{UTILS_DIR}/last_signals.json"
+SUMMARY_FILE = f"{UTILS_DIR}/summary.json"
 ATR_WINDOW = 14
 ATR_MULTIPLIER = 1.5
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
@@ -24,8 +25,8 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 os.makedirs(UTILS_DIR, exist_ok=True)
 
-# Clean up previous run outputs (to keep only current signals)
-for f in [SIGNALS_FILE, HOLDS_FILE]:
+# Clean up previous run outputs (fresh start)
+for f in [SIGNALS_FILE, HOLDS_FILE, SUMMARY_FILE]:
     try:
         open(f, "w").close()
     except Exception:
@@ -134,6 +135,7 @@ def ensure_model(train_df):
 def analyze():
     last_signals = load_last_signals()
     new_signals = {}
+    summary = {"BUY": [], "SELL": [], "HOLD": []}
     model = None
 
     for sym in SYMBOLS:
@@ -182,10 +184,13 @@ def analyze():
                 f.write(entry + "\n")
 
         new_signals[sym] = {"signal": signal, "price": price, "time": ts}
+        summary[signal].append({"symbol": sym, "price": price, "time": ts})
         print(entry)
 
+    # Save results
     save_last_signals(new_signals)
-    print("✅ Signals and model updated successfully.")
+    Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2))
+    print("✅ Signals, summary, and model updated successfully.")
 
 
 if __name__ == "__main__":
