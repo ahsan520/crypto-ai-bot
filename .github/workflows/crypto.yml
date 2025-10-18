@@ -35,9 +35,9 @@ jobs:
       - name: 🧹 Prepare utils directory
         run: |
           mkdir -p utils
-          echo "{}" > utils/last_signals.json
-          echo "" > utils/signals.txt
-          echo "" > utils/holds.txt
+          [[ -f utils/last_signals.json ]] || echo "{}" > utils/last_signals.json
+          [[ -f utils/signals.txt ]] || echo "" > utils/signals.txt
+          [[ -f utils/holds.txt ]] || echo "" > utils/holds.txt
 
       - name: 🔑 Set up environment variables
         env:
