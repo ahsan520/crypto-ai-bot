@@ -186,7 +186,7 @@ def analyze_and_backtest(test_mode=False):
 
         # Append only truly new signals (prevent duplicates)
         for s in sigs:
-            key = f"{sym}": s.replace('\n',' ') if False else s
+            results[f"{sym}"] = s.replace('\n', ' ') if isinstance(s, str) else s
             prev = last_signals.get(sym)
             if prev != s:
                 new_signals.append(s)
