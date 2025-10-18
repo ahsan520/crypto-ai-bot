@@ -9,6 +9,14 @@ jobs:
   crypto-ai:
     runs-on: ubuntu-latest
 
+    env:
+      # ✅ Environment variables (now includes CoinGecko key)
+      COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
@@ -32,18 +40,21 @@ jobs:
           pip install -r requirements.txt
           pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy
 
-      - name: 🧹 Ensure utils folder and clear old files
+      - name: 🧹 Prepare utils folder
         run: |
           mkdir -p utils
           echo "{}" > utils/last_signals.json
           echo "" > utils/signals.txt
 
-      - name: 🔑 Set up environment variables
-        env:
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        run: echo "✅ Email environment variables configured."
+      - name: 🔑 Verify environment variables
+        run: |
+          echo "✅ Email and API environment variables configured."
+          if [ -z "$COINGECKO_API_KEY" ]; then
+            echo "❌ COINGECKO_API_KEY is missing! Please add it in GitHub Secrets."
+            exit 1
+          else
+            echo "🪙 CoinGecko API Key found ✅"
+          fi
 
       - name: 🚀 Run Crypto AI Bot
         run: |
