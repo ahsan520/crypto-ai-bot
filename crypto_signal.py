@@ -1,102 +1,107 @@
-# ------------------------------------------------------------
-# 🤖 STRATEGY SECTION (AI-BASED)
-# ------------------------------------------------------------
+import os
+import json
+import yfinance as yf
+import pandas as pd
+import ta
+from datetime import datetime
+from utils.helpers import send_alert  # make sure this helper exists
+
+CONFIG = {
+    "symbols": ["BTC-USD", "GALA-USD", "XRP-USD"],
+    "period": "90d",
+    "interval": "1h"
+}
+
+UTILS_DIR = "utils"
+SIGNALS_FILE = os.path.join(UTILS_DIR, "signals.txt")
+LAST_SIGNALS_FILE = os.path.join(UTILS_DIR, "last_signals.json")
+
+
+# === Ensure utils folder exists ===
+os.makedirs(UTILS_DIR, exist_ok=True)
+
+# === Clear contents before run ===
+open(SIGNALS_FILE, "w").close()
+open(LAST_SIGNALS_FILE, "w").close()
+print("🧹 Cleared old signal files before run.")
+
+
+# === Feature Engineering ===
 def build_features(df):
-    """Add technical indicators and candlestick features."""
-    df = df.copy()
-
-    # --- Core indicators ---
-    df['rsi'] = ta.momentum.RSIIndicator(df['Close']).rsi()
-    macd = ta.trend.MACD(df['Close'])
-    df['macd'] = macd.macd()
-    bb = ta.volatility.BollingerBands(df['Close'])
-    df['bb_mid'] = bb.bollinger_mavg()
-    df['bb_high'] = bb.bollinger_hband()
-    df['bb_low'] = bb.bollinger_lband()
-    df['bb_width'] = (df['bb_high'] - df['bb_low']) / df['bb_mid']
-    df['percent_b'] = (df['Close'] - df['bb_low']) / (df['bb_high'] - df['bb_low'])
-    df['volume_change'] = df['Volume'].pct_change().fillna(0)
-
-    # --- ATR ---
-    atr = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=config["atr_window"])
-    df['ATR'] = atr.average_true_range()
-
-    # --- Candlestick patterns ---
-    o, h, l, c = df['Open'], df['High'], df['Low'], df['Close']
-    body = (c - o).abs()
-    candle_range = (h - l).replace(0, np.nan)
-    upper_shadow = h - np.maximum(o, c)
-    lower_shadow = np.minimum(o, c) - l
-
-    df['shooting_star'] = (
-        ((body <= 0.3 * candle_range) & (upper_shadow >= 2 * body) & (lower_shadow <= 0.2 * body))
-        .fillna(0).astype(int)
-    )
-    df['hammer'] = (
-        ((body <= 0.3 * candle_range) & (lower_shadow >= 2 * body) & (upper_shadow <= 0.2 * body))
-        .fillna(0).astype(int)
-    )
-
-    return df.dropna()
+    df["rsi"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
+    df["ema_fast"] = ta.trend.EMAIndicator(df["Close"], window=9).ema_indicator()
+    df["ema_slow"] = ta.trend.EMAIndicator(df["Close"], window=21).ema_indicator()
+    df["macd"] = ta.trend.MACD(df["Close"]).macd()
+    df.dropna(inplace=True)
+    return df
 
 
-# ------------------------------------------------------------
-# 📊 SIGNAL GENERATION (patched with safer YF handling)
-# ------------------------------------------------------------
+# === Simple AI Decision Model ===
+def get_signal(df):
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    if latest["ema_fast"] > latest["ema_slow"] and prev["ema_fast"] <= prev["ema_slow"]:
+        return "BUY"
+    elif latest["ema_fast"] < latest["ema_slow"] and prev["ema_fast"] >= prev["ema_slow"]:
+        return "SELL"
+    else:
+        return "HOLD"
+
+
+# === Generate All Signals ===
 def generate_signals():
-    print("📡 Generating AI-based crypto signals ...")
-    last_signals = load_last_signals()
-    model = None
-    new_signals = {}
-
-    for sym in config["symbols"]:
-        print(f"📥 Downloading {sym} data ...")
+    signals = {}
+    for sym in CONFIG["symbols"]:
         try:
+            print(f"📡 Downloading {sym} ...")
             df = yf.download(
                 sym,
-                period=config["period"],
-                interval=config["interval"],
+                period=CONFIG["period"],
+                interval=CONFIG["interval"],
                 progress=False
             ).dropna()
 
-            # 🧩 Flatten multi-index columns if needed
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+            if df.empty:
+                print(f"⚠️ No data for {sym}, skipping.")
+                continue
 
-            # 🧹 Ensure Close is 1D (some yfinance versions return DataFrame instead of Series)
-            if isinstance(df.get('Close'), pd.DataFrame):
-                df['Close'] = df['Close'].squeeze()
-            if df['Close'].ndim > 1:
-                df['Close'] = df['Close'].iloc[:, 0]
-
-            # 🧠 Build AI features
             df = build_features(df)
-            if model is None:
-                model = ensure_model(df)
-
-            feature_cols = [
-                'rsi', 'macd', 'bb_mid', 'bb_high', 'bb_low', 'bb_width',
-                'percent_b', 'volume_change', 'shooting_star', 'hammer'
-            ]
-            X = df[feature_cols].fillna(0)
-            ai_pred = model.predict(X)
-
-            # --- Entry/Exit logic ---
-            entry = (df['Close'] <= df['bb_low']) & (ai_pred == 1)
-            exit_ = df['Close'] >= df['bb_high']
-
-            signal = "HOLD"
-            if len(entry) >= 2:
-                if entry.iloc[-1] and not entry.iloc[-2]:
-                    signal = "BUY"
-                elif exit_.iloc[-1] and not exit_.iloc[-2]:
-                    signal = "SELL"
-
-            new_signals[sym] = signal
-            print(f"🔹 {sym}: {signal}")
-
+            signal = get_signal(df)
+            signals[sym] = signal
+            print(f"✅ {sym}: {signal}")
         except Exception as e:
-            print(f"⚠️ Skipping {sym} due to error: {e}")
-            continue
+            print(f"❌ Error fetching {sym}: {e}")
+    return signals
 
-    return new_signals
+
+# === Save and Notify ===
+def save_and_notify(signals):
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    last_signals = {}
+
+    # Write signals.txt log
+    with open(SIGNALS_FILE, "a") as f:
+        for sym, signal in signals.items():
+            f.write(f"{timestamp} - {sym}: {signal}\n")
+            last_signals[sym] = {"signal": signal, "timestamp": timestamp}
+
+            if signal in ["BUY", "SELL"]:
+                print(f"📡 Sending signal '{signal}' for {sym} ...")
+                send_alert(sym, signal, source="auto-bot")
+                print(f"✅ Alert sent for {sym}: {signal}")
+
+    # Save to last_signals.json
+    with open(LAST_SIGNALS_FILE, "w") as f:
+        json.dump(last_signals, f, indent=2)
+
+    print("\n📊 ===== SIGNAL SUMMARY =====")
+    for sym, s in last_signals.items():
+        print(f"🪙 {sym}: {s['signal']} at {s['timestamp']}")
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    print("🚀 Starting Crypto AI Bot...")
+    signals = generate_signals()
+    save_and_notify(signals)
+    print("✅ Bot execution completed.")
