@@ -7,16 +7,28 @@ from datetime import datetime
 
 def read_signal():
     """Read BUY/HOLD/SELL signal from last_signal.json or signals.txt"""
+    signal = None
+
     if os.path.exists("last_signal.json"):
-        with open("last_signal.json") as f:
-            data = json.load(f)
-            return data.get("signal", "No signal found").strip().upper()
+        try:
+            with open("last_signal.json") as f:
+                data = json.load(f)
+                signal = str(data.get("signal", "")).strip().upper()
+        except Exception as e:
+            print(f"⚠️ Error reading last_signal.json: {e}")
 
     elif os.path.exists("signals.txt"):
-        with open("signals.txt") as f:
-            return f.read().strip().upper()
+        try:
+            with open("signals.txt") as f:
+                signal = f.read().strip().upper()
+        except Exception as e:
+            print(f"⚠️ Error reading signals.txt: {e}")
 
-    return "NO SIGNAL FOUND"
+    # Default to NONE if empty or missing
+    if not signal:
+        signal = "NONE"
+
+    return signal
 
 
 def send_via_zapier(signal_text):
@@ -52,7 +64,7 @@ def send_via_email(signal_text):
     try:
         print(f"📨 Sending email alert: {signal_text}")
         msg = MIMEText(f"Crypto Signal: {signal_text}", "plain")
-        msg["Subject"] = "Crypto AI Bot Signal"
+        msg["Subject"] = f"Crypto Signal: {signal_text}"
         msg["From"] = smtp_user
         msg["To"] = signal_email
 
@@ -73,9 +85,16 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"🪙 Current Signal: {signal} at {timestamp}")
 
-    if not send_via_zapier(signal):
-        print("🔁 Zapier failed or not set. Using email fallback.")
-        send_via_email(signal)
+    alert_method = "NONE"
+
+    if send_via_zapier(signal):
+        alert_method = "ZAPIER"
+    else:
+        print("🔁 Zapier failed or not set. Using email fallback...")
+        if send_via_email(signal):
+            alert_method = "SMTP"
+
+    print(f"📊 Alert method used: {alert_method}")
 
 
 if __name__ == "__main__":
