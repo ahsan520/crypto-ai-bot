@@ -5,6 +5,9 @@ on:
     - cron: "0 * * * *"  # Runs hourly
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   crypto-ai:
     runs-on: ubuntu-latest
@@ -22,38 +25,43 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || echo "⚠️ requirements.txt not found, installing manually..."
-          pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy python-binance
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy python-binance
+          fi
 
       - name: 🧹 Prepare utils directory
         run: |
           mkdir -p utils
+          # keep existing files if present; initialize otherwise
           [[ -f utils/last_signals.json ]] || echo "{}" > utils/last_signals.json
           [[ -f utils/signals.txt ]] || echo "" > utils/signals.txt
           [[ -f utils/holds.txt ]] || echo "" > utils/holds.txt
+          [[ -f utils/summary.json ]] || echo "{}" > utils/summary.json
 
-      - name: 🔑 Set up environment variables
+      - name: 🔑 Configure secrets in env
         env:
           ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
-        run: echo "✅ Environment variables configured."
+        run: echo "✅ Secrets will be available to the run."
 
-      - name: 🧠 Run AI Backtest Predictor
+      - name: 🧠 Run AI Backtest Predictor (optional)
         run: |
-          echo "🧠 Running AI predictor..."
-          python crypto_ai_backtest_multi.py || echo "⚠️ Predictor skipped (file not found)"
+          echo "🧠 Running predictor (if present)..."
+          python crypto_ai_backtest_multi.py || echo "⚠️ crypto_ai_backtest_multi.py not found or failed — continuing."
 
-      - name: 🚀 Run Crypto AI Bot
+      - name: 🚀 Run Crypto Signal Processor
         env:
           ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -61,7 +69,7 @@ jobs:
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
         run: |
-          echo "🚀 Starting Crypto AI Bot..."
+          echo "🚀 Running crypto_signal.py..."
           python crypto_signal.py
 
       - name: 🧠 Check for BUY/SELL signals
@@ -73,20 +81,22 @@ jobs:
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 💾 Commit and push updates (only if signals exist)
+      - name: 💾 Commit and push updates (only if BUY/SELL found)
         if: steps.check_signals.outputs.found == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "GitHub Actions"
           git pull origin main || true
-          git add utils/last_signals.json utils/signals.txt utils/holds.txt
+          git add utils/last_signals.json utils/summary.json utils/signals.txt utils/holds.txt || true
           git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit."
-          git push origin main || echo "No push needed."
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped."
 
-      - name: 🧾 Display summary
+      - name: 🧾 Display summary (logs)
         run: |
           echo "📊 ===== SIGNAL SUMMARY ====="
-          cat utils/last_signals.json || echo "{}"
+          cat utils/summary.json || echo "{}"
           echo ""
           echo "🪙 BUY/SELL signals:"
           cat utils/signals.txt || echo "No buy/sell signals found."
