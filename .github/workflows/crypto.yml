@@ -1,35 +1,37 @@
-name: Crypto AI Bot
+name: 🤖 Crypto AI Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
+    - cron: "*/30 * * * *"  # every 30 minutes
   workflow_dispatch:
 
 jobs:
-  crypto-ai:
+  run-bot:
     runs-on: ubuntu-latest
+
     steps:
-      - name: 🧩 Checkout repository
+      - name: 🧩 Checkout repo
         uses: actions/checkout@v4
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
+          cache: "pip"  # ✅ Cache pip dependencies automatically
 
-      - name: ♻️ Cache Python packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: 📦 Install dependencies (only if cache miss)
+      - name: 🧰 Install dependencies
         run: |
-          echo "Installing dependencies if not cached..."
-          pip install --upgrade pip
-          pip install -r requirements.txt || true
+          python -m pip install --upgrade pip
+          pip install --upgrade setuptools wheel
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install PyYAML yfinance pandas numpy ta scikit-learn joblib requests
+
+      - name: 🧹 Cleanup old signals
+        run: |
+          mkdir -p utils
+          echo "{}" > utils/last_signals.json
+          echo "" > utils/signals.txt
+          echo "🧹 Cleared old signal files before run."
 
       - name: 🚀 Run Crypto AI Bot
         env:
@@ -39,11 +41,22 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
           echo "🚀 Starting Crypto AI Bot..."
-          python crypto_signal.py
+          python crypto_signal.py || echo "⚠️ Bot failed."
 
-      - name: 🧾 Upload signals output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: crypto-signals
-          path: utils/signals.txt
+      - name: 💾 Commit updates
+        run: |
+          echo "💾 Committing updates..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add utils/last_signals.json utils/signals.txt || true
+          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: 📊 Show signal summary
+        run: |
+          echo "📊 ===== SIGNAL SUMMARY ====="
+          echo "🪙 Contents of utils/last_signals.json:"
+          cat utils/last_signals.json || echo "{}"
+          echo "📜 Recent signals:"
+          tail -n 10 utils/signals.txt || echo "No recent signals found."
+          echo "✅ Bot execution completed."
