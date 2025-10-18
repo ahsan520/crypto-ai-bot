@@ -3,149 +3,179 @@ import json
 import time
 import requests
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
+from binance.client import Client
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import BollingerBands
 
-# === Load settings ===
-CONFIG_FILE = "crypto.yml"
-UTILS_DIR = "utils"
-os.makedirs(UTILS_DIR, exist_ok=True)
-SIGNALS_FILE = os.path.join(UTILS_DIR, "signals.txt")
-LAST_FILE = os.path.join(UTILS_DIR, "last_signals.json")
+# ========== CONFIG ==========
+COINS = ["bitcoin", "ethereum", "ripple", "gala"]
+SYMBOL_MAP = {
+    "bitcoin": "BTC-USD",
+    "ethereum": "ETH-USD",
+    "ripple": "XRP-USD",
+    "gala": "GALA-USD"
+}
+OUTPUT_JSON = "utils/last_signals.json"
+OUTPUT_TXT = "utils/signals.txt"
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
-# === Load config ===
-if os.path.exists(CONFIG_FILE):
-    import yaml
-    with open(CONFIG_FILE, "r") as f:
-        cfg = yaml.safe_load(f)
-    TICKERS = cfg.get("tickers", ["BTC-USD", "ETH-USD"])
-    LOOKBACK = cfg.get("lookback_days", 90)
-    INTERVAL = cfg.get("interval", "1h")
-else:
-    print("⚠️ crypto.yml not found — using defaults.")
-    TICKERS = ["BTC-USD", "ETH-USD"]
-    LOOKBACK = 90
-    INTERVAL = "1h"
+# Binance client for fallback
+binance_client = Client()
 
-# === Env vars ===
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "")
-API_BASE = "https://api.coingecko.com/api/v3/simple/price"
+# ========== FETCH FUNCTIONS ==========
 
-# === Helpers ===
-def fetch_from_coingecko(symbol):
-    """Fetch simple price data for 90 days from CoinGecko"""
-    mapping = {
-        "BTC-USD": "bitcoin",
-        "ETH-USD": "ethereum",
-        "XRP-USD": "ripple",
-        "GALA-USD": "gala"
-    }
-    coin = mapping.get(symbol, symbol.lower().replace("-usd", ""))
-    print(f"🪙 Trying CoinGecko API for {coin}")
+def fetch_from_coingecko(coin):
+    """Fetch historical data from CoinGecko (90 days, hourly)."""
     try:
-        url = (
-            f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
-            f"?vs_currency=usd&days={LOOKBACK}&interval=hourly&x_cg_demo_api_key={COINGECKO_API_KEY}"
-        )
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
+        print(f"🪙 Trying CoinGecko API for {coin}")
+        url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": "90",
+            "interval": "hourly",
+            "x_cg_demo_api_key": COINGECKO_API_KEY
+        }
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
         if "prices" not in data:
-            return None
-        df = pd.DataFrame(data["prices"], columns=["timestamp", "price"])
+            raise ValueError("❌ No 'prices' key in CoinGecko response")
+        df = pd.DataFrame(data["prices"], columns=["timestamp", "close"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
+        df["close"] = df["close"].astype(float)
         return df
     except Exception as e:
-        print(f"❌ CoinGecko error for {symbol}: {e}")
+        print(f"❌ CoinGecko error for {coin}: {e}")
         return None
 
 
 def fetch_from_binance(symbol):
-    """Try Binance API fallback"""
-    print(f"📡 Trying Binance API for {symbol}")
-    pair = symbol.replace("-USD", "USDT")
+    """Fetch last 90 days of hourly candles from Binance."""
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=1h&limit=1000"
-        r = requests.get(url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        df = pd.DataFrame(data, columns=[
-            "time", "open", "high", "low", "close", "volume",
-            "_", "_", "_", "_", "_", "_"
+        print(f"📊 Trying Binance API for {symbol}")
+        klines = binance_client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "90 days ago UTC")
+        if not klines:
+            return None
+        df = pd.DataFrame(klines, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "trades",
+            "taker_buy_base", "taker_buy_quote", "ignore"
         ])
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df.set_index("time", inplace=True)
-        df["price"] = df["close"].astype(float)
-        return df[["price"]]
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df["close"] = df["close"].astype(float)
+        return df[["timestamp", "close"]]
     except Exception as e:
         print(f"❌ Binance error for {symbol}: {e}")
         return None
 
 
 def fetch_from_yahoo(symbol):
-    """Try Yahoo Finance fallback"""
-    print(f"📉 Falling back to Yahoo Finance for {symbol}")
+    """Fetch last 90 days of hourly data from Yahoo Finance."""
     try:
-        df = yf.download(symbol, period=f"{LOOKBACK}d", interval="1h", progress=False)
+        print(f"📉 Trying Yahoo Finance for {symbol}")
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="90d", interval="1h")
         if df.empty:
             return None
-        df = df.rename(columns={"Close": "price"})
-        return df[["price"]]
+        df = df.reset_index()[["Datetime", "Close"]]
+        df.rename(columns={"Datetime": "timestamp", "Close": "close"}, inplace=True)
+        return df
     except Exception as e:
-        print(f"❌ Yahoo error for {symbol}: {e}")
+        print(f"❌ Yahoo Finance error for {symbol}: {e}")
         return None
 
 
-def get_data(symbol):
-    """Get data from multiple sources"""
-    for fetcher in [fetch_from_coingecko, fetch_from_binance, fetch_from_yahoo]:
-        df = fetcher(symbol)
-        if df is not None and not df.empty:
-            return df
+def get_crypto_data(coin):
+    """Main fetch function with fallback logic."""
+    symbol = SYMBOL_MAP[coin]
+    print(f"📡 Fetching {symbol} data...")
+
+    # 1️⃣ Try CoinGecko
+    df = fetch_from_coingecko(coin)
+    if df is not None and not df.empty:
+        return df
+
+    # 2️⃣ Try Binance (remove '-USD' suffix)
+    binance_symbol = symbol.replace("-USD", "USDT")
+    df = fetch_from_binance(binance_symbol)
+    if df is not None and not df.empty:
+        return df
+
+    # 3️⃣ Try Yahoo Finance
+    df = fetch_from_yahoo(symbol)
+    if df is not None and not df.empty:
+        return df
+
     print(f"🚫 Failed to load data for {symbol} from all sources.")
     return None
 
 
-def generate_signals(df):
-    """Generate BUY/SELL signals"""
-    df["rsi"] = RSIIndicator(df["price"]).rsi()
-    macd = MACD(df["price"])
-    df["macd"] = macd.macd()
-    df["signal"] = macd.macd_signal()
-    bb = BollingerBands(df["price"])
-    df["bb_low"] = bb.bollinger_lband()
-    df["bb_high"] = bb.bollinger_hband()
+# ========== SIGNAL GENERATION ==========
 
-    latest = df.iloc[-1]
-    if latest["rsi"] < 30 and latest["macd"] > latest["signal"] and latest["price"] < latest["bb_low"]:
-        return "BUY"
-    elif latest["rsi"] > 70 and latest["macd"] < latest["signal"] and latest["price"] > latest["bb_high"]:
-        return "SELL"
-    return "HOLD"
+def generate_signal(df):
+    """Generate BUY/SELL signal based on RSI, MACD, and Bollinger Bands."""
+    try:
+        df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+        macd = MACD(df["close"])
+        df["macd"] = macd.macd()
+        df["signal"] = macd.macd_signal()
+
+        bb = BollingerBands(df["close"])
+        df["bb_high"] = bb.bollinger_hband()
+        df["bb_low"] = bb.bollinger_lband()
+
+        latest = df.iloc[-1]
+        signal = "HOLD"
+        reason = ""
+
+        # Simple logic
+        if latest["rsi"] < 30 and latest["macd"] > latest["signal"]:
+            signal = "BUY"
+            reason = "RSI oversold + MACD crossover"
+        elif latest["rsi"] > 70 and latest["macd"] < latest["signal"]:
+            signal = "SELL"
+            reason = "RSI overbought + MACD crossover"
+
+        return signal, reason
+    except Exception as e:
+        print(f"⚠️ Signal generation error: {e}")
+        return "HOLD", str(e)
 
 
-# === Main ===
-signals = {}
-for symbol in TICKERS:
-    print(f"📡 Fetching {symbol} data...")
-    df = get_data(symbol)
-    if df is not None and not df.empty:
-        signal = generate_signals(df)
-        signals[symbol] = signal
-        print(f"✅ {symbol} → {signal}")
-    else:
-        print(f"⚠️ No data for {symbol}, skipping...")
+# ========== MAIN EXECUTION ==========
 
-# === Save results ===
-with open(LAST_FILE, "w") as f:
-    json.dump(signals, f, indent=2)
+def main():
+    print("🚀 Starting Crypto AI Bot...")
+    signals = {}
 
-with open(SIGNALS_FILE, "w") as f:
-    for k, v in signals.items():
-        f.write(f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M')} {k}: {v}\n")
+    # Prepare output
+    os.makedirs("utils", exist_ok=True)
+    open(OUTPUT_TXT, "w").close()
 
-print("✅ Bot execution completed.")
+    for coin in COINS:
+        df = get_crypto_data(coin)
+        if df is not None and not df.empty:
+            signal, reason = generate_signal(df)
+            symbol = SYMBOL_MAP[coin]
+            signals[symbol] = {"signal": signal, "reason": reason, "time": str(datetime.utcnow())}
+            print(f"✅ {symbol}: {signal} ({reason})")
+
+            with open(OUTPUT_TXT, "a") as f:
+                f.write(f"{datetime.utcnow()} - {symbol}: {signal} ({reason})\n")
+        else:
+            print(f"⚠️ No data for {coin}, skipping...")
+
+    with open(OUTPUT_JSON, "w") as f:
+        json.dump(signals, f, indent=2)
+
+    print("📊 ===== SIGNAL SUMMARY =====")
+    print(json.dumps(signals, indent=2))
+    print("✅ Bot execution completed.")
+
+
+if __name__ == "__main__":
+    main()
