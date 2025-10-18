@@ -14,6 +14,26 @@ SMTP_PASS = os.getenv("SMTP_PASS", "password")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
+SIGNALS_FILE = "signals.json"
+HOLDS_FILE = "holds.json"
+
+# ---------------- JSON HELPERS ----------------
+def load_json(path, default):
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return default
+
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+signals = load_json(SIGNALS_FILE, [])
+holds = load_json(HOLDS_FILE, {})
+
 # ------------- DATA FETCHERS -------------
 def fetch_yahoo(sym):
     try:
@@ -95,7 +115,6 @@ def send_alert(sym, signal, price, confidence):
     try:
         requests.post(ZAPIER_WEBHOOK, json={"symbol": sym, "signal": signal, "price": price, "confidence": confidence})
         print("✅ Sent to Zapier webhook")
-        return
     except Exception as e:
         print(f"⚠️ Zapier failed: {e}")
 
@@ -111,6 +130,7 @@ def send_alert(sym, signal, price, confidence):
 
 # ------------- MAIN ---------------------
 def analyze():
+    global holds, signals
     for sym in SYMBOLS:
         print(f"📊 Processing {sym}...")
         df = fetch_data(sym)
@@ -137,29 +157,47 @@ def analyze():
 
         signal = None
 
+        holding = holds.get(sym, False)
+
         # --- BUY ---
         if (
-            rsi < 30
+            not holding
+            and rsi < 30
             and macd > macd_signal
             and ema_fast > ema_slow
             and prev_ema_fast <= prev_ema_slow
             and last["pred"] == 1
         ):
             signal = "buy"
+            holds[sym] = True
 
         # --- SELL ---
         elif (
-            rsi > 70
+            holding
+            and rsi > 70
             and macd < macd_signal
             and ema_fast < ema_slow
             and prev_ema_fast >= prev_ema_slow
             and last["pred"] == 0
         ):
             signal = "sell"
+            holds[sym] = False
 
         if signal:
             confidence = float(last["prob"]) * 100
+            entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "symbol": sym,
+                "signal": signal,
+                "price": float(last["Close"]),
+                "confidence": confidence,
+            }
+            signals.append(entry)
             send_alert(sym, signal, float(last["Close"]), confidence)
+
+    save_json(SIGNALS_FILE, signals)
+    save_json(HOLDS_FILE, holds)
+    print("💾 Updated signals.json and holds.json")
 
 if __name__ == "__main__":
     print("🚀 Running crypto_signal.py...")
