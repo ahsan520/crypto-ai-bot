@@ -1,9 +1,10 @@
+# File: .github/workflows/crypto.yml
 name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # Run every 30 minutes
-  workflow_dispatch:          # Allow manual trigger from GitHub Actions tab
+    - cron: "*/30 * * * *"     # Run every 30 minutes
+  workflow_dispatch:            # Allow manual runs from GitHub
 
 jobs:
   run-signals:
@@ -25,10 +26,10 @@ jobs:
 
       - name: Run crypto signal bot
         env:
+          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
-          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
         run: |
           python crypto_signal.py || exit 1
 
@@ -40,5 +41,4 @@ jobs:
             *.csv
             *.png
             *.txt
-            *.json
           if-no-files-found: ignore
