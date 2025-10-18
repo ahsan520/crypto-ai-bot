@@ -7,15 +7,15 @@ from datetime import datetime
 
 
 def generate_signal():
-    """Generate or update last_signal.json if it doesn't exist or is empty"""
-    signal_file = "last_signal.json"
+    """Generate or update last_signals.json if it doesn't exist or is empty"""
+    signal_file = "last_signals.json"
 
     if os.path.exists(signal_file):
         try:
             with open(signal_file) as f:
                 data = json.load(f)
                 if data.get("signal"):
-                    print("✅ Existing signal found in last_signal.json.")
+                    print("✅ Existing signal found in last_signals.json.")
                     return  # no need to overwrite
         except Exception as e:
             print(f"⚠️ Could not read {signal_file}: {e}")
@@ -32,25 +32,25 @@ def generate_signal():
     with open(signal_file, "w") as f:
         json.dump(signal_data, f, indent=2)
 
-    print("🆕 Created new last_signal.json:")
+    print("🆕 Created new last_signals.json:")
     print(json.dumps(signal_data, indent=2))
 
 
 def read_signal():
-    """Read BUY/HOLD/SELL signal from last_signal.json or signals.txt"""
+    """Read BUY/HOLD/SELL signal from last_signals.json or signals.txt"""
     signal = None
     extra_info = {}
 
-    if os.path.exists("last_signal.json"):
+    if os.path.exists("last_signals.json"):
         try:
-            with open("last_signal.json") as f:
+            with open("last_signals.json") as f:
                 data = json.load(f)
-                print("📁 Contents of last_signal.json:")
+                print("📁 Contents of last_signals.json:")
                 print(json.dumps(data, indent=2))
                 signal = str(data.get("signal", "")).strip().upper()
                 extra_info = data
         except Exception as e:
-            print(f"⚠️ Error reading last_signal.json: {e}")
+            print(f"⚠️ Error reading last_signals.json: {e}")
 
     elif os.path.exists("signals.txt"):
         try:
