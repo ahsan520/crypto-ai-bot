@@ -12,7 +12,7 @@ import argparse
 # ---------------- CONFIG ----------------
 SYMBOLS = ['BTC-USD', 'GALA-USD', 'XRP-USD']
 INTERVAL = '30m'
-PERIOD = '180d'
+PERIOD = '60d'
 HORIZON = 3  # bars ahead for labeling (if training)
 MODEL_FILE = 'crypto_ai_model.pkl'
 SIGNAL_FILE = 'signals.txt'
