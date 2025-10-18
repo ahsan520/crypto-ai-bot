@@ -4,7 +4,38 @@ import smtplib
 import requests
 from email.mime.text import MIMEText
 from datetime import datetime
- 
+
+
+def generate_signal():
+    """Generate or update last_signal.json if it doesn't exist or is empty"""
+    signal_file = "last_signal.json"
+
+    if os.path.exists(signal_file):
+        try:
+            with open(signal_file) as f:
+                data = json.load(f)
+                if data.get("signal"):
+                    print("✅ Existing signal found in last_signal.json.")
+                    return  # no need to overwrite
+        except Exception as e:
+            print(f"⚠️ Could not read {signal_file}: {e}")
+
+    # --- Generate a sample/test signal ---
+    signal_data = {
+        "symbol": "BTCUSDT",
+        "signal": "BUY",
+        "confidence": 0.87,
+        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "source": "auto-test"
+    }
+
+    with open(signal_file, "w") as f:
+        json.dump(signal_data, f, indent=2)
+
+    print("🆕 Created new last_signal.json:")
+    print(json.dumps(signal_data, indent=2))
+
+
 def read_signal():
     """Read BUY/HOLD/SELL signal from last_signal.json or signals.txt"""
     signal = None
@@ -92,6 +123,10 @@ def send_via_email(signal_text, timestamp, extra_info=None):
 
 
 def main():
+    # ✅ Step 1: Make sure we have a signal
+    generate_signal()
+
+    # ✅ Step 2: Read and send it
     signal, extra_info = read_signal()
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
