@@ -47,21 +47,21 @@ jobs:
         run: |
           python crypto_signal.py || exit 1
 
-      # ✅ Commit and push last_signal.json for Colab verification
+      # ✅ Commit and push last_signals.json for Colab verification
       - name: Commit and push signal file
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f "last_signal.json" ]; then
+          if [ -f "last_signals.json" ]; then
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
             git pull origin main || true
-            git add last_signal.json
-            git commit -m "Update last_signal.json [skip ci]" || echo "No changes to commit"
+            git add last_signals.json
+            git commit -m "Update last_signals.json [skip ci]" || echo "No changes to commit"
             git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
           else
-            echo "⚠️ last_signal.json not found, skipping commit."
+            echo "⚠️ last_signals.json not found, skipping commit."
           fi
 
       # ✅ Upload artifacts (for logs, CSVs, etc.)
@@ -72,5 +72,5 @@ jobs:
           path: |
             *.csv
             *.txt
-            last_signal.json
+            last_signals.json
           if-no-files-found: ignore
