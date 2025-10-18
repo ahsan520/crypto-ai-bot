@@ -1,162 +1,61 @@
-name: Crypto AI Bot
+name: 🤖 Crypto AI Bot
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"     # Every 30 minutes
-  workflow_dispatch:            # Allow manual trigger
-
-permissions:
-  contents: write
+    - cron: "0 * * * *"  # every hour
 
 jobs:
-  run-signals:
+  run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
 
     steps:
-      # ✅ Checkout repository
-      - name: Checkout repository
+      - name: 🧩 Checkout repo
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
-      # ✅ Set up Python
-      - name: Set up Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      # ✅ Cache pip dependencies
-      - name: Cache pip packages
-        id: cache-pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      # ✅ Install dependencies
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f "requirements.txt" ]; then
-            pip install -r requirements.txt
-          else
-            echo "⚠️ requirements.txt not found, installing essentials..."
-            pip install yfinance pandas numpy ta joblib matplotlib scikit-learn vectorbt
-          fi
+          pip install -r requirements.txt || true
+          pip install yfinance ta scikit-learn joblib requests pyyaml
 
-      # ✅ Convert notebook to Python if present
-      - name: Convert notebook to Python
+      - name: 🧹 Cleanup old signal files
         run: |
-          if [ -f "crypto_ai_backtest_multi.ipynb" ]; then
-            echo "🧠 Converting notebook -> crypto_ai_backtest_multi.py"
-            jupyter nbconvert --to script crypto_ai_backtest_multi.ipynb
-          else
-            echo "⚠️ Notebook not found; skipping conversion."
-          fi
-
-      # ✅ Create utils folder and sync script if missing
-      - name: Ensure utils/sync_strategy.py exists
-        run: |
+          echo "Cleaning up old signals..."
           mkdir -p utils
-          if [ ! -f utils/sync_strategy.py ]; then
-            echo "🛠️ Creating utils/sync_strategy.py ..."
-            cat << 'EOF' > utils/sync_strategy.py
-import re, shutil
-from pathlib import Path
-
-NOTEBOOK_PY = Path("crypto_ai_backtest_multi.py")
-SIGNAL_PY = Path("crypto_signal.py")
-BACKUP = Path("crypto_signal_backup.py")
-
-if SIGNAL_PY.exists():
-    shutil.copy2(SIGNAL_PY, BACKUP)
-    print(f"📦 Backup created: {BACKUP}")
-
-if not NOTEBOOK_PY.exists():
-    raise FileNotFoundError("⚠️ crypto_ai_backtest_multi.py not found!")
-
-with open(NOTEBOOK_PY, "r") as f:
-    notebook_code = f.read()
-
-match = re.search(r"def\s+(generate_signals|backtest_signals|analyze_and_backtest)\s*\(.*?\):[\\s\\S]+?(?=\\ndef\\s|\\Z)", notebook_code)
-if not match:
-    raise ValueError("❌ Could not find a signal generation function in notebook export.")
-strategy_code = match.group(0)
-
-with open(SIGNAL_PY, "r") as f:
-    original = f.read()
-
-if "# === STRATEGY SECTION START ===" not in original:
-    new_code = (
-        original
-        + "\\n\\n# === STRATEGY SECTION START ===\\n"
-        + strategy_code
-        + "\\n# === STRATEGY SECTION END ===\\n"
-    )
-else:
-    new_code = re.sub(
-        r"# === STRATEGY SECTION START ===[\\s\\S]+?# === STRATEGY SECTION END ===",
-        f"# === STRATEGY SECTION START ===\\n{strategy_code}\\n# === STRATEGY SECTION END ===",
-        original,
-    )
-
-with open(SIGNAL_PY, "w") as f:
-    f.write(new_code)
-
-print("✅ crypto_signal.py successfully updated with latest strategy code!")
-EOF
-          fi
-          echo "✅ sync_strategy.py ready."
-
-      # ✅ Clean up previous signal files
-      - name: Clean old signals
-        run: |
-          mkdir -p utils
-          rm -f utils/last_signals.json utils/signals.txt
           echo "{}" > utils/last_signals.json
-          echo "🧹 Cleared old signals."
+          echo "" > utils/signals.txt
+          echo "✅ Cleanup complete."
 
-      # ✅ Run sync to update crypto_signal.py
-      - name: 🔄 Sync latest strategy into crypto_signal.py
-        run: |
-          python utils/sync_strategy.py || echo "⚠️ Sync failed, continuing with previous version."
-
-      # ✅ Run crypto signal bot
-      - name: Run crypto signal bot
+      - name: 🔐 Set environment secrets
         env:
-          SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
           ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
-        run: |
-          echo "🚀 Running crypto_signal.py ..."
-          python crypto_signal.py || exit 1
+          SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
+        run: echo "Secrets configured."
 
-      # ✅ Commit and push updated signal files
-      - name: Commit and push signal files
-        if: success()
+      - name: 🚀 Run crypto_signal.py
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🧾 Checking for updates..."
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git pull origin main || true
-          mkdir -p utils
-          git add utils/last_signals.json utils/signals.txt crypto_signal.py || true
-          git commit -m "Auto-update: signals + strategy [skip ci]" || echo "No changes to commit"
-          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
+          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SIGNAL_EMAIL: ${{ secrets.SIGNAL_EMAIL }}
+        run: python crypto_signal.py
 
-      # ✅ Upload workflow artifacts (optional)
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: crypto-results
-          path: |
-            utils/last_signals.json
-            utils/signals.txt
-            *.csv
-            *.txt
-          if-no-files-found: ignore
+      - name: 💾 Commit and push updates
+        if: success()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add utils/last_signals.json utils/signals.txt || true
+          git commit -m "🤖 Update crypto signals [skip ci]" || echo "No changes to commit"
+          git push
