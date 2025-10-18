@@ -1,1 +1,22 @@
-{}
+{
+  "BTC-USD": {
+    "signal": "HOLD",
+    "reason": "",
+    "time": "2025-10-18 20:14:23.995027"
+  },
+  "ETH-USD": {
+    "signal": "HOLD",
+    "reason": "",
+    "time": "2025-10-18 20:14:24.405458"
+  },
+  "XRP-USD": {
+    "signal": "HOLD",
+    "reason": "",
+    "time": "2025-10-18 20:14:24.776818"
+  },
+  "GALA-USD": {
+    "signal": "HOLD",
+    "reason": "",
+    "time": "2025-10-18 20:14:25.074532"
+  }
+}
