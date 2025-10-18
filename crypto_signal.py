@@ -13,14 +13,29 @@ import joblib
 from pathlib import Path
 
 # ------------------------------------------------------------
+# 🧹 AUTO CLEANUP OF OLD SIGNALS
+# ------------------------------------------------------------
+UTILS_DIR = Path(__file__).parent / "utils"
+UTILS_DIR.mkdir(exist_ok=True)
+LAST_SIGNALS_FILE = UTILS_DIR / "last_signals.json"
+
+if LAST_SIGNALS_FILE.exists():
+    try:
+        with open(LAST_SIGNALS_FILE, "w") as f:
+            json.dump({}, f)
+        print("🧹 Cleared previous contents of last_signals.json.")
+    except Exception as e:
+        print("⚠️ Failed to clear last_signals.json:", e)
+else:
+    with open(LAST_SIGNALS_FILE, "w") as f:
+        json.dump({}, f)
+    print("🆕 Created new last_signals.json.")
+
+# ------------------------------------------------------------
 # 📦 CONFIGURATION & SETUP
 # ------------------------------------------------------------
 ROOT_DIR = Path(__file__).parent
-UTILS_DIR = ROOT_DIR / "utils"
-UTILS_DIR.mkdir(exist_ok=True)
-
 CONFIG_FILE = ROOT_DIR / "crypto.yml"
-LAST_SIGNALS_FILE = UTILS_DIR / "last_signals.json"
 SIGNALS_TXT = UTILS_DIR / "signals.txt"
 MODEL_FILE = UTILS_DIR / "crypto_ai_model.pkl"
 
@@ -44,7 +59,7 @@ else:
 # Merge defaults
 config = {**CONFIG_DEFAULTS, **config_data}
 
-# Environment variables (kept from your original setup)
+# Environment variables
 ZAPIER_URL = os.getenv("ZAPIER_URL")
 SIGNAL_EMAIL = os.getenv("SIGNAL_EMAIL")
 SMTP_USER = os.getenv("SMTP_USER")
