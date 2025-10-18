@@ -3,7 +3,7 @@ name: Crypto AI Bot
 on:
   schedule:
     - cron: "*/30 * * * *"     # Every 30 minutes
-  workflow_dispatch:
+  workflow_dispatch:            # Allow manual trigger
 
 permissions:
   contents: write
@@ -13,16 +13,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ✅ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      # ✅ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # ✅ Cache pip dependencies
       - name: Cache pip packages
         id: cache-pip
         uses: actions/cache@v4
@@ -32,31 +35,85 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # ✅ Always install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas numpy python-dotenv jupyter
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          else
+            echo "⚠️ requirements.txt not found, installing essentials..."
+            pip install yfinance pandas numpy ta joblib matplotlib scikit-learn vectorbt
+          fi
 
-      # ✅ Convert notebook to Python
+      # ✅ Convert notebook to .py if exists
       - name: Convert notebook to Python
         run: |
           if [ -f "crypto_ai_backtest_multi.ipynb" ]; then
-            echo "Converting crypto_ai_backtest_multi.ipynb → crypto_ai_backtest_multi.py ..."
-            jupyter nbconvert --to script crypto_ai_backtest_multi.ipynb --output crypto_ai_backtest_multi.py
+            echo "🧠 Converting crypto_ai_backtest_multi.ipynb -> crypto_ai_backtest_multi.py"
+            jupyter nbconvert --to script crypto_ai_backtest_multi.ipynb
+          else
+            echo "⚠️ Notebook not found; skipping conversion."
           fi
 
-      # ✅ Sync logic from backtest script into signal bot
-      - name: Sync logic into crypto_signal.py
+      # ✅ Create utils folder & sync script if missing
+      - name: Ensure utils/sync_strategy.py exists
         run: |
-          if [ -f "crypto_ai_backtest_multi.py" ]; then
-            echo "Updating crypto_signal.py with latest logic..."
-            # Copy strategy or function definitions from backtest file into crypto_signal.py
-            echo "# --- AUTO-GENERATED FROM crypto_ai_backtest_multi.py ---" > crypto_signal.py
-            tail -n +1 crypto_ai_backtest_multi.py >> crypto_signal.py
-            echo "\n# --- END OF AUTO SYNC ---" >> crypto_signal.py
-          else
-            echo "⚠️ No backtest file found, skipping sync."
+          mkdir -p utils
+          if [ ! -f utils/sync_strategy.py ]; then
+            echo "🛠️ Creating utils/sync_strategy.py ..."
+            cat << 'EOF' > utils/sync_strategy.py
+import re, shutil
+from pathlib import Path
+
+NOTEBOOK_PY = Path("crypto_ai_backtest_multi.py")
+SIGNAL_PY = Path("crypto_signal.py")
+BACKUP = Path("crypto_signal_backup.py")
+
+if SIGNAL_PY.exists():
+    shutil.copy2(SIGNAL_PY, BACKUP)
+    print(f"📦 Backup created: {BACKUP}")
+
+if not NOTEBOOK_PY.exists():
+    raise FileNotFoundError("⚠️ crypto_ai_backtest_multi.py not found!")
+
+with open(NOTEBOOK_PY, "r") as f:
+    notebook_code = f.read()
+
+match = re.search(r"def\s+(generate_signals|backtest_signals|analyze_and_backtest)\s*\(.*?\):[\\s\\S]+?(?=\\ndef\\s|\\Z)", notebook_code)
+if not match:
+    raise ValueError("❌ Could not find a signal generation function in notebook export.")
+strategy_code = match.group(0)
+
+with open(SIGNAL_PY, "r") as f:
+    original = f.read()
+
+if "# === STRATEGY SECTION START ===" not in original:
+    new_code = (
+        original
+        + "\\n\\n# === STRATEGY SECTION START ===\\n"
+        + strategy_code
+        + "\\n# === STRATEGY SECTION END ===\\n"
+    )
+else:
+    new_code = re.sub(
+        r"# === STRATEGY SECTION START ===[\\s\\S]+?# === STRATEGY SECTION END ===",
+        f"# === STRATEGY SECTION START ===\\n{strategy_code}\\n# === STRATEGY SECTION END ===",
+        original,
+    )
+
+with open(SIGNAL_PY, "w") as f:
+    f.write(new_code)
+
+print("✅ crypto_signal.py successfully updated with latest strategy code!")
+EOF
           fi
+          echo "✅ sync_strategy.py ready."
+
+      # ✅ Run sync to update crypto_signal.py
+      - name: 🔄 Sync latest strategy into crypto_signal.py
+        run: |
+          python utils/sync_strategy.py || echo "⚠️ Sync failed, continuing with previous version."
 
       # ✅ Run crypto signal bot
       - name: Run crypto signal bot
@@ -66,22 +123,24 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
         run: |
-          echo "Running crypto_signal.py ..."
+          echo "🚀 Running crypto_signal.py ..."
           python crypto_signal.py || exit 1
 
-      # ✅ Commit results
-      - name: Commit and push signal file
+      # ✅ Commit updated signal files
+      - name: Commit and push updates
         if: success()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "🧾 Checking for updates..."
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git pull origin main || true
-          git add last_signals.json crypto_ai_backtest_multi.py crypto_signal.py
-          git commit -m "Auto-update signal logic + last_signals.json [skip ci]" || echo "No changes"
+          git add last_signals.json crypto_signal.py || true
+          git commit -m "Auto-update: signals + strategy [skip ci]" || echo "No changes to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git main || echo "Push skipped"
 
+      # ✅ Upload artifacts (optional)
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
