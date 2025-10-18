@@ -84,7 +84,7 @@ def ai_predict(df):
     model.fit(df[features][:-1], df["target"][:-1])
 
     df["pred"] = model.predict(df[features])
-    df["prob"] = model.predict_proba(df[features])[:, 1]  # Probability of upward move
+    df["prob"] = model.predict_proba(df[features])[:, 1]
     return df
 
 # ------------- ALERTS -------------------
@@ -92,7 +92,6 @@ def send_alert(sym, signal, price, confidence):
     msg = f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} — {sym} {signal.upper()} signal at ${price:.2f} (Confidence: {confidence:.1f}%)"
     print(f"🚨 {msg}")
 
-    # Try Zapier first
     try:
         requests.post(ZAPIER_WEBHOOK, json={"symbol": sym, "signal": signal, "price": price, "confidence": confidence})
         print("✅ Sent to Zapier webhook")
@@ -100,7 +99,6 @@ def send_alert(sym, signal, price, confidence):
     except Exception as e:
         print(f"⚠️ Zapier failed: {e}")
 
-    # Fallback Email via SMTP
     try:
         s = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         s.starttls()
@@ -122,33 +120,46 @@ def analyze():
         df = build_features(df)
         df = ai_predict(df)
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        last = df.iloc[-1].squeeze()
+        prev = df.iloc[-2].squeeze()
+
+        try:
+            rsi = float(last["rsi"])
+            macd = float(last["macd"])
+            macd_signal = float(last["macd_signal"])
+            ema_fast = float(last["ema_fast"])
+            ema_slow = float(last["ema_slow"])
+            prev_ema_fast = float(prev["ema_fast"])
+            prev_ema_slow = float(prev["ema_slow"])
+        except Exception as e:
+            print(f"⚠️ Conversion error for {sym}: {e}")
+            continue
+
         signal = None
 
         # --- BUY ---
         if (
-            last["rsi"] < 30
-            and last["macd"] > last["macd_signal"]
-            and last["ema_fast"] > last["ema_slow"]
-            and prev["ema_fast"] <= prev["ema_slow"]
+            rsi < 30
+            and macd > macd_signal
+            and ema_fast > ema_slow
+            and prev_ema_fast <= prev_ema_slow
             and last["pred"] == 1
         ):
             signal = "buy"
 
         # --- SELL ---
         elif (
-            last["rsi"] > 70
-            and last["macd"] < last["macd_signal"]
-            and last["ema_fast"] < last["ema_slow"]
-            and prev["ema_fast"] >= prev["ema_slow"]
+            rsi > 70
+            and macd < macd_signal
+            and ema_fast < ema_slow
+            and prev_ema_fast >= prev_ema_slow
             and last["pred"] == 0
         ):
             signal = "sell"
 
         if signal:
-            confidence = last["prob"] * 100
-            send_alert(sym, signal, last["Close"], confidence)
+            confidence = float(last["prob"]) * 100
+            send_alert(sym, signal, float(last["Close"]), confidence)
 
 if __name__ == "__main__":
     print("🚀 Running crypto_signal.py...")
