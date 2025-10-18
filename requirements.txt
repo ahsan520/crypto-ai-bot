@@ -1,24 +1,23 @@
-# Core scientific stack
-numpy>=1.26.0
-pandas>=2.2.0
-scikit-learn>=1.5.0
+# === Core AI & Data Science ===
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.2
+joblib==1.4.2
 
-# Financial data & technical analysis
-yfinance>=0.2.40
-ta>=0.11.0
+# === Technical Indicators ===
+ta==0.11.0
 
-# Config & I/O
-PyYAML>=6.0.2
+# === Market Data ===
+yfinance==0.2.43
 
-# Email + Notifications
-requests>=2.32.3
-smtplib3==0.1.0
-python-dotenv>=1.0.1
+# === Configuration & HTTP ===
+PyYAML==6.0.2
+requests==2.32.3
 
-# Logging & utilities
-tqdm>=4.66.4
-joblib>=1.4.2
+# === Email & Utilities ===
+smtplib3==1.0.0
+python-dateutil==2.9.0.post0
 
-# Optional (for backtesting or Jupyter-based workflows)
-matplotlib>=3.9.1
-jupyterlab>=4.2.0
+# === GitHub/CI ===
+setuptools==75.1.0
+wheel==0.44.0
