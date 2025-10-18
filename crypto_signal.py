@@ -6,7 +6,7 @@ from sklearn.ensemble import RandomForestClassifier
 # ---------------- CONFIG ----------------
 SYMBOLS = ["BTC", "ETH", "ADA", "DOGE", "SOL", "XRP"]
 PERIOD = "60d"
-INTERVAL = "1h"
+INTERVAL = "30m"  # ⬅️ Updated from 1h to 30m
 
 ZAPIER_WEBHOOK = os.getenv("ZAPIER_WEBHOOK", "https://hooks.zapier.com/hooks/catch/XXXXXX/XXXXXX")
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "alert@example.com")
@@ -59,7 +59,7 @@ def fetch_coingecko(sym):
 
 def fetch_binance(sym):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={sym.upper()}USDT&interval=1h&limit=720"
+        url = f"https://api.binance.com/api/v3/klines?symbol={sym.upper()}USDT&interval=30m&limit=720"
         r = requests.get(url, timeout=10)
         data = r.json()
         df = pd.DataFrame(data, columns=["Time", "Open", "High", "Low", "Close", "Vol", "_", "_", "_", "_", "_", "_"])
@@ -156,10 +156,8 @@ def analyze():
             continue
 
         signal = None
-
         holding = holds.get(sym, False)
 
-        # --- BUY ---
         if (
             not holding
             and rsi < 30
@@ -171,7 +169,6 @@ def analyze():
             signal = "buy"
             holds[sym] = True
 
-        # --- SELL ---
         elif (
             holding
             and rsi > 70
