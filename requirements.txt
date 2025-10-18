@@ -1,10 +1,21 @@
-yfinance
-pandas
-numpy
-ta
-scikit-learn
-joblib
-vectorbt
-matplotlib
-requests
-python-dotenv
+# Core scientific stack
+numpy>=1.26.0
+pandas>=2.2.0
+scikit-learn>=1.5.0
+
+# Financial data & technical analysis
+yfinance>=0.2.40
+ta>=0.11.0
+
+# Email + Notifications
+requests>=2.32.3
+smtplib3==0.1.0
+python-dotenv>=1.0.1
+
+# Logging & utilities
+tqdm>=4.66.4
+joblib>=1.4.2
+
+# Optional (for backtesting or Jupyter-based workflows)
+matplotlib>=3.9.1
+jupyterlab>=4.2.0
