@@ -1,173 +1,182 @@
 import os
 import json
 import smtplib
-import requests
 import pandas as pd
-import numpy as np
-import yfinance as yf
-from email.mime.text import MIMEText
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
-from ta.volatility import BollingerBands
+import requests
 from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# ========== CONFIG ==========
-COINS = ["bitcoin", "ethereum", "ripple", "gala"]
-SYMBOL_MAP = {
-    "bitcoin": "BTC-USD",
-    "ethereum": "ETH-USD",
-    "ripple": "XRP-USD",
-    "gala": "GALA-USD"
-}
-OUTPUT_JSON = "utils/last_signals.json"
-OUTPUT_TXT = "utils/signals.txt"
-OUTPUT_HOLD = "utils/holds.txt"
-
+# === Load Config ===
 ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 EMAIL_TO = os.getenv("EMAIL_TO")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
+utils_dir = "utils"
+os.makedirs(utils_dir, exist_ok=True)
 
-# ========== FETCH DATA ==========
-def fetch_yahoo(symbol):
+signals_file = os.path.join(utils_dir, "signals.txt")
+holds_file = os.path.join(utils_dir, "holds.txt")
+last_signals_file = os.path.join(utils_dir, "last_signals.json")
+
+# === Universal Save Helpers ===
+def save_signal(signal_type, content):
+    file_path = signals_file if signal_type in ["BUY", "SELL"] else holds_file
+    with open(file_path, "a") as f:
+        f.write(content + "\n")
+
+def load_last_signals():
+    if os.path.exists(last_signals_file):
+        with open(last_signals_file, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_last_signals(data):
+    with open(last_signals_file, "w") as f:
+        json.dump(data, f, indent=2)
+
+# === Email Fallback ===
+def send_email(subject, body):
     try:
-        print(f"📉 Fetching Yahoo Finance for {symbol}")
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="90d", interval="1h")
-        if df.empty:
-            return None
-        df = df.reset_index()[["Datetime", "Close"]]
-        df.rename(columns={"Datetime": "timestamp", "Close": "close"}, inplace=True)
-        return df
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_SENDER
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("📧 Email sent successfully.")
     except Exception as e:
-        print(f"⚠️ Yahoo Finance error for {symbol}: {e}")
-        return None
+        print(f"❌ Email send failed: {e}")
 
-
-# ========== TECHNICAL SIGNAL ==========
-def generate_signal(df):
+# === Webhook Notification ===
+def send_to_zapier(payload):
+    if not ZAPIER_WEBHOOK_URL:
+        print("⚠️ No Zapier webhook URL configured.")
+        return False
     try:
-        df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
-        macd = MACD(df["close"])
-        df["macd"] = macd.macd()
-        df["signal"] = macd.macd_signal()
-        bb = BollingerBands(df["close"])
-        df["bb_high"] = bb.bollinger_hband()
-        df["bb_low"] = bb.bollinger_lband()
-
-        latest = df.iloc[-1]
-        signal = "HOLD"
-        reason = ""
-
-        if latest["rsi"] < 30 and latest["macd"] > latest["signal"]:
-            signal = "BUY"
-            reason = "RSI oversold + MACD crossover"
-        elif latest["rsi"] > 70 and latest["macd"] < latest["signal"]:
-            signal = "SELL"
-            reason = "RSI overbought + MACD crossover"
-
-        return signal, reason
-    except Exception as e:
-        return "HOLD", str(e)
-
-
-# ========== NOTIFICATIONS ==========
-def send_notification(msg):
-    """Send notification via Zapier webhook, fallback to email."""
-    if ZAPIER_WEBHOOK_URL:
-        try:
-            r = requests.post(ZAPIER_WEBHOOK_URL, json={"text": msg}, timeout=10)
-            if r.status_code == 200:
-                print("✅ Notification sent via Zapier.")
-                return
-            else:
-                print(f"⚠️ Zapier webhook failed: {r.status_code}")
-        except Exception as e:
-            print(f"⚠️ Zapier webhook error: {e}")
-
-    # Fallback to email
-    if EMAIL_SENDER and EMAIL_PASSWORD and EMAIL_TO:
-        try:
-            msg_obj = MIMEText(msg)
-            msg_obj["Subject"] = "Crypto AI Signal Alert"
-            msg_obj["From"] = EMAIL_SENDER
-            msg_obj["To"] = EMAIL_TO
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-                server.sendmail(EMAIL_SENDER, EMAIL_TO, msg_obj.as_string())
-            print("📧 Email notification sent.")
-        except Exception as e:
-            print(f"❌ Email send error: {e}")
-
-
-# ========== MAIN ==========
-def main():
-    print("🚀 Starting Crypto AI Bot...")
-    signals = {}
-    os.makedirs("utils", exist_ok=True)
-    open(OUTPUT_TXT, "w").close()
-    open(OUTPUT_HOLD, "w").close()
-
-    # Load AI predictions if available
-    ai_preds = {}
-    if os.path.exists("utils/predictions.json"):
-        with open("utils/predictions.json") as f:
-            ai_preds = json.load(f)
-        print(f"🧠 Loaded AI predictions for {len(ai_preds)} coins.")
-    else:
-        print("⚠️ No AI predictions found — proceeding with TA only.")
-
-    buy_sell_msgs = []
-
-    for coin in COINS:
-        symbol = SYMBOL_MAP[coin]
-        df = fetch_yahoo(symbol)
-        if df is None or df.empty:
-            print(f"⚠️ No data for {symbol}, skipping...")
-            continue
-
-        ta_signal, reason = generate_signal(df)
-        ai_signal = ai_preds.get(symbol, {}).get("pred", "HOLD")
-
-        # Combine TA + AI
-        if ta_signal == ai_signal and ta_signal in ["BUY", "SELL"]:
-            final_signal = ta_signal
-            reason += f" | AI confirmed ({ai_signal})"
-        elif ai_signal in ["BUY", "SELL"] and ta_signal == "HOLD":
-            final_signal = ai_signal
-            reason += f" | AI override ({ai_signal})"
+        r = requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=10)
+        if r.status_code == 200:
+            print("✅ Sent to Zapier webhook.")
+            return True
         else:
-            final_signal = "HOLD"
+            print(f"⚠️ Zapier returned status {r.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Webhook failed: {e}")
+        return False
 
-        signals[symbol] = {
-            "signal": final_signal,
-            "reason": reason,
-            "time": str(datetime.utcnow())
+# === Price Fetching (CoinGecko API → Binance → Yahoo) ===
+def fetch_price(symbol):
+    symbol = symbol.upper()
+
+    # --- CoinGecko with API Key ---
+    try:
+        headers = {"accept": "application/json"}
+        if COINGECKO_API_KEY:
+            headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
+
+        # Map common tickers to CoinGecko IDs
+        gecko_map = {
+            "BTC": "bitcoin",
+            "ETH": "ethereum",
+            "ADA": "cardano",
+            "DOGE": "dogecoin",
+            "GALA": "gala"
         }
 
-        line = f"{datetime.utcnow()} - {symbol}: {final_signal} ({reason})"
-        if final_signal in ["BUY", "SELL"]:
-            buy_sell_msgs.append(line)
-            with open(OUTPUT_TXT, "a") as f:
-                f.write(line + "\n")
-        else:
-            with open(OUTPUT_HOLD, "a") as f:
-                f.write(line + "\n")
+        if symbol in gecko_map:
+            resp = requests.get(
+                f"https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": gecko_map[symbol], "vs_currencies": "usd"},
+                headers=headers,
+                timeout=10
+            )
+            data = resp.json()
+            if gecko_map[symbol] in data:
+                return float(data[gecko_map[symbol]]["usd"])
+    except Exception as e:
+        print(f"⚠️ CoinGecko failed for {symbol}: {e}")
 
-        print(f"✅ {symbol}: {final_signal} ({reason})")
+    # --- Binance fallback ---
+    try:
+        resp = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT", timeout=10)
+        data = resp.json()
+        if "price" in data:
+            return float(data["price"])
+    except Exception as e:
+        print(f"⚠️ Binance failed for {symbol}: {e}")
 
-    with open(OUTPUT_JSON, "w") as f:
-        json.dump(signals, f, indent=2)
+    # --- Yahoo Finance fallback ---
+    try:
+        resp = requests.get(f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}-USD", timeout=10)
+        data = resp.json()
+        return float(data["quoteResponse"]["result"][0]["regularMarketPrice"])
+    except Exception as e:
+        print(f"⚠️ Yahoo failed for {symbol}: {e}")
 
-    if buy_sell_msgs:
-        send_notification("\n".join(buy_sell_msgs))
+    print(f"❌ Could not fetch price for {symbol}")
+    return None
 
-    print("📊 ===== SIGNAL SUMMARY =====")
-    print(json.dumps(signals, indent=2))
-    print("✅ Bot execution completed.")
+# === Simple AI-Like Logic ===
+def analyze_symbol(symbol, prices):
+    if len(prices) < 3:
+        return "HOLD"
 
+    short_ma = sum(prices[-3:]) / 3
+    long_ma = sum(prices) / len(prices)
+
+    if short_ma > long_ma * 1.02:
+        return "BUY"
+    elif short_ma < long_ma * 0.98:
+        return "SELL"
+    else:
+        return "HOLD"
+
+# === Main Bot Logic ===
+def main():
+    print("🚀 Starting Crypto AI Bot...")
+
+    symbols = ["BTC", "ETH", "ADA", "DOGE", "GALA"]
+    last_signals = load_last_signals()
+    new_signals = {}
+
+    for sym in symbols:
+        print(f"📊 Checking {sym}...")
+        price = fetch_price(sym)
+        if price is None:
+            continue
+
+        prices = last_signals.get(sym, {}).get("history", [])
+        prices.append(price)
+        if len(prices) > 20:
+            prices = prices[-20:]
+
+        signal = analyze_symbol(sym, prices)
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        entry = f"{timestamp} | {sym} | {signal} | ${price:.4f}"
+        new_signals[sym] = {"signal": signal, "price": price, "time": timestamp, "history": prices}
+
+        save_signal(signal, entry)
+        print(entry)
+
+        # Send notifications for BUY/SELL only
+        if signal in ["BUY", "SELL"]:
+            payload = {"symbol": sym, "signal": signal, "price": price, "time": timestamp}
+            sent = send_to_zapier(payload)
+            if not sent:
+                send_email(f"{signal} ALERT: {sym}", f"{sym} is now {signal} at ${price:.4f}")
+
+    save_last_signals(new_signals)
+    print("✅ Signals updated.")
 
 if __name__ == "__main__":
     main()
