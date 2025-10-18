@@ -25,7 +25,7 @@ COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 os.makedirs(UTILS_DIR, exist_ok=True)
 
-# Clean up previous run outputs (fresh start)
+# Clean up previous run outputs
 for f in [SIGNALS_FILE, HOLDS_FILE, SUMMARY_FILE]:
     try:
         open(f, "w").close()
@@ -34,8 +34,21 @@ for f in [SIGNALS_FILE, HOLDS_FILE, SUMMARY_FILE]:
 
 # ---------------- HELPERS ----------------
 def fetch_price(symbol):
-    """Try CoinGecko -> Binance -> Yahoo fallback."""
+    """Try Yahoo → CoinGecko → Binance fallback."""
     sym = symbol.upper()
+
+    # --- Yahoo Finance first ---
+    try:
+        r = requests.get(
+            f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym}-USD",
+            timeout=10,
+        )
+        d = r.json()
+        return float(d["quoteResponse"]["result"][0]["regularMarketPrice"])
+    except Exception as e:
+        print(f"⚠️ Yahoo failed for {symbol}: {e}")
+
+    # --- CoinGecko fallback ---
     try:
         headers = {"accept": "application/json"}
         if COINGECKO_API_KEY:
@@ -55,7 +68,7 @@ def fetch_price(symbol):
     except Exception as e:
         print(f"⚠️ CoinGecko failed for {symbol}: {e}")
 
-    # Binance fallback
+    # --- Binance fallback ---
     try:
         r = requests.get(
             f"https://api.binance.com/api/v3/ticker/price?symbol={sym}USDT", timeout=10
@@ -66,32 +79,36 @@ def fetch_price(symbol):
     except Exception as e:
         print(f"⚠️ Binance failed for {symbol}: {e}")
 
-    # Yahoo fallback
-    try:
-        r = requests.get(
-            f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym}-USD",
-            timeout=10,
-        )
-        d = r.json()
-        return float(d["quoteResponse"]["result"][0]["regularMarketPrice"])
-    except Exception as e:
-        print(f"⚠️ Yahoo failed for {symbol}: {e}")
     return None
 
 
 def build_features(df):
+    """Builds combined technical features (with safe flattening)."""
     df = df.copy()
-    df["rsi"] = ta.momentum.RSIIndicator(df["Close"]).rsi()
-    macd = ta.trend.MACD(df["Close"])
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c if isinstance(c, str) else c[0] for c in df.columns]
+
+    if isinstance(df["Close"], pd.DataFrame):
+        df["Close"] = df["Close"].squeeze()
+
+    df["rsi"] = ta.momentum.RSIIndicator(df["Close"].astype(float)).rsi()
+    macd = ta.trend.MACD(df["Close"].astype(float))
     df["macd"] = macd.macd()
-    bb = ta.volatility.BollingerBands(df["Close"])
+    df["macd_signal"] = macd.macd_signal()
+    df["macd_diff"] = macd.macd_diff()
+
+    bb = ta.volatility.BollingerBands(df["Close"].astype(float))
     df["bb_high"] = bb.bollinger_hband()
     df["bb_low"] = bb.bollinger_lband()
     df["bb_width"] = (df["bb_high"] - df["bb_low"]) / df["Close"]
     df["percent_b"] = (df["Close"] - df["bb_low"]) / (df["bb_high"] - df["bb_low"])
+
     atr = ta.volatility.AverageTrueRange(df["High"], df["Low"], df["Close"], window=ATR_WINDOW)
     df["ATR"] = atr.average_true_range()
-    return df.dropna()
+
+    df.dropna(inplace=True)
+    return df
 
 
 def load_last_signals():
@@ -109,7 +126,7 @@ def save_last_signals(d):
 
 
 def ensure_model(train_df):
-    """Train fallback ML model if missing."""
+    """Train lightweight fallback AI model if missing."""
     if os.path.exists(MODEL_FILE):
         try:
             print("✅ Loading existing model...")
@@ -152,6 +169,10 @@ def analyze():
             continue
 
         df = build_features(df)
+        if df.empty:
+            print(f"⚠️ No valid indicators for {sym}")
+            continue
+
         if model is None:
             model = ensure_model(df)
 
@@ -159,7 +180,6 @@ def analyze():
         preds = model.predict(X)
         df["ai_signal"] = preds
 
-        # Decision logic
         close = df["Close"].iloc[-1]
         rsi = df["rsi"].iloc[-1]
         macd_val = df["macd"].iloc[-1]
@@ -172,7 +192,7 @@ def analyze():
         else:
             signal = "HOLD"
 
-        price = fetch_price(sym) or close
+        price = fetch_price(sym) or float(close)
         ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
         entry = f"{ts} | {sym} | {signal} | ${price:.4f}"
@@ -187,7 +207,6 @@ def analyze():
         summary[signal].append({"symbol": sym, "price": price, "time": ts})
         print(entry)
 
-    # Save results
     save_last_signals(new_signals)
     Path(SUMMARY_FILE).write_text(json.dumps(summary, indent=2))
     print("✅ Signals, summary, and model updated successfully.")
