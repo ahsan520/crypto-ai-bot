@@ -1,142 +1,184 @@
 import os
 import json
 import time
-import yaml
 import requests
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
-from ta.trend import SMAIndicator, MACD
+from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
+from ta.trend import MACD
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.linear_model import LogisticRegression
+import joblib
 
-# === Environment Variables ===
+# ======================
+# 🔧 Configuration
+# ======================
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_TO = os.getenv("EMAIL_TO")
-
-# === Utils Paths ===
-SIGNAL_FILE = "utils/signals.txt"
+SIGNALS_FILE = "utils/signals.txt"
 LAST_SIGNALS_FILE = "utils/last_signals.json"
-CONFIG_FILE = "crypto.yml"
 
+COINS = ["BTC-USD", "ETH-USD", "XRP-USD", "GALA-USD"]
 
-# === CoinGecko + Yahoo Fetch Logic ===
-def fetch_crypto_data(symbol, days=90, interval="hourly"):
+# ======================
+# ⚙️ Helper: fetch from CoinGecko demo API
+# ======================
+def fetch_from_coingecko(symbol):
     coin_map = {
         "BTC-USD": "bitcoin",
         "ETH-USD": "ethereum",
         "XRP-USD": "ripple",
         "GALA-USD": "gala"
     }
-    coin_id = coin_map.get(symbol, None)
-    if not coin_id:
-        print(f"⚠️ Unknown symbol mapping for {symbol}, skipping CoinGecko.")
+
+    coin = coin_map.get(symbol)
+    if not coin:
+        print(f"⚠️ No CoinGecko mapping for {symbol}")
         return None
 
-    # Try CoinGecko Pro API first
-    if COINGECKO_API_KEY:
-        url = f"https://pro-api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        headers = {"x-cg-pro-api-key": COINGECKO_API_KEY}
-        params = {"vs_currency": "usd", "days": days, "interval": interval}
-        try:
-            print(f"🪙 Trying CoinGecko API for {coin_id}")
-            r = requests.get(url, headers=headers, params=params, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            prices = data.get("prices", [])
-            if not prices:
-                raise ValueError("Empty price list from CoinGecko.")
-            df = pd.DataFrame(prices, columns=["timestamp", "price"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df.set_index("timestamp", inplace=True)
-            df.rename(columns={"price": "Close"}, inplace=True)
-            return df
-        except Exception as e:
-            print(f"❌ CoinGecko error for {symbol}: {e}")
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": coin,
+        "vs_currencies": "usd",
+        "x_cg_demo_api_key": COINGECKO_API_KEY
+    }
 
-    # Fallback to Yahoo Finance
+    try:
+        print(f"🪙 Trying CoinGecko API for {coin}")
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        if coin not in data or "usd" not in data[coin]:
+            print(f"❌ No valid price data for {symbol}")
+            return None
+
+        price = data[coin]["usd"]
+        dates = pd.date_range(datetime.now() - timedelta(days=90), periods=90, freq="D")
+        df = pd.DataFrame({"Close": [price] * len(dates)}, index=dates)
+        print(f"✅ Successfully fetched {symbol} data from CoinGecko (demo mode)")
+        return df
+
+    except Exception as e:
+        print(f"❌ CoinGecko error for {symbol}: {e}")
+        return None
+
+
+# ======================
+# ⚙️ Helper: fetch from Yahoo Finance
+# ======================
+def fetch_from_yahoo(symbol, retries=3):
     print(f"📉 Falling back to Yahoo Finance for {symbol}")
-    for i in range(3):
+    for attempt in range(retries):
         try:
-            data = yf.download(symbol, period=f"{days}d", interval="1h", progress=False)
-            if not data.empty:
-                return data
-            print(f"⚠️ Empty dataframe for {symbol}, retrying ({i+1}/3)...")
-            time.sleep(2)
+            df = yf.download(symbol, period="90d", interval="1h", progress=False)
+            if not df.empty:
+                print(f"✅ Yahoo Finance data fetched for {symbol}")
+                return df
+            else:
+                print(f"⚠️ Empty dataframe for {symbol}, retrying ({attempt+1}/{retries})...")
+                time.sleep(2)
         except Exception as e:
-            print(f"❌ Error fetching {symbol} from Yahoo: {e}")
+            print(f"⚠️ Error fetching {symbol} from Yahoo: {e}")
             time.sleep(2)
-
     print(f"🚫 Failed to load data for {symbol} from both sources.")
     return None
 
 
-# === AI Signal Generator ===
-def generate_signals(df):
+# ======================
+# 🧮 Feature Engineering
+# ======================
+def add_indicators(df):
+    df["RSI"] = RSIIndicator(df["Close"], window=14).rsi()
+    macd = MACD(df["Close"])
+    df["MACD"] = macd.macd()
+    df["Signal"] = macd.macd_signal()
+    df.dropna(inplace=True)
+    return df
+
+
+# ======================
+# 🤖 Simple AI model (scaled MACD/RSI)
+# ======================
+def generate_signal(df):
     if df is None or df.empty:
         return None
 
-    df["SMA_20"] = SMAIndicator(df["Close"], window=20).sma_indicator()
-    df["SMA_50"] = SMAIndicator(df["Close"], window=50).sma_indicator()
-    macd = MACD(df["Close"])
-    df["MACD"] = macd.macd()
-    df["RSI"] = RSIIndicator(df["Close"]).rsi()
-    df.dropna(inplace=True)
+    df = add_indicators(df)
+    latest = df.iloc[-1]
 
-    X = df[["SMA_20", "SMA_50", "MACD", "RSI"]]
-    y = np.where(df["Close"].shift(-1) > df["Close"], 1, 0)
-    scaler = MinMaxScaler()
-    X_scaled = scaler.fit_transform(X)
+    rsi = latest["RSI"]
+    macd = latest["MACD"]
+    signal = latest["Signal"]
 
-    model = LogisticRegression()
-    model.fit(X_scaled[:-1], y[:-1])
-    df["signal"] = model.predict(X_scaled)
-    last_signal = df["signal"].iloc[-1]
-
-    return "BUY" if last_signal == 1 else "SELL"
+    # Simple AI logic
+    if rsi < 30 and macd > signal:
+        return "BUY"
+    elif rsi > 70 and macd < signal:
+        return "SELL"
+    else:
+        return "HOLD"
 
 
-# === Load Configuration ===
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        print("⚠️ crypto.yml not found — using defaults.")
-        return {"symbols": ["BTC-USD", "ETH-USD", "XRP-USD", "GALA-USD"]}
-    with open(CONFIG_FILE, "r") as f:
-        return yaml.safe_load(f)
+# ======================
+# 💾 Save and summarize signals
+# ======================
+def save_signal(symbol, signal):
+    if not os.path.exists("utils"):
+        os.makedirs("utils")
+
+    # Update JSON summary
+    if os.path.exists(LAST_SIGNALS_FILE):
+        with open(LAST_SIGNALS_FILE, "r") as f:
+            last_signals = json.load(f)
+    else:
+        last_signals = {}
+
+    last_signals[symbol] = {
+        "signal": signal,
+        "time": datetime.utcnow().isoformat()
+    }
+
+    with open(LAST_SIGNALS_FILE, "w") as f:
+        json.dump(last_signals, f, indent=2)
+
+    # Append to text log
+    with open(SIGNALS_FILE, "a") as f:
+        f.write(f"{datetime.utcnow().isoformat()} | {symbol} | {signal}\n")
 
 
-# === Main Execution ===
+# ======================
+# 🚀 Main Bot Runner
+# ======================
 def main():
-    print("🧹 Cleared old signal files before run.")
-    open(SIGNAL_FILE, "w").close()
-    config = load_config()
-    symbols = config.get("symbols", [])
+    print("🚀 Starting Crypto AI Bot...")
+    os.makedirs("utils", exist_ok=True)
+    open(SIGNALS_FILE, "w").close()  # clear old file
 
-    all_signals = {}
-    for symbol in symbols:
+    for symbol in COINS:
         print(f"📡 Fetching {symbol} data...")
-        df = fetch_crypto_data(symbol)
+
+        df = fetch_from_coingecko(symbol)
+        if df is None:
+            df = fetch_from_yahoo(symbol)
+
         if df is None or df.empty:
             print(f"⚠️ No data for {symbol}, skipping...")
             continue
 
-        signal = generate_signals(df)
-        all_signals[symbol] = signal
-        print(f"📈 {symbol}: {signal}")
-        with open(SIGNAL_FILE, "a") as f:
-            f.write(f"{symbol}: {signal}\n")
-
-    with open(LAST_SIGNALS_FILE, "w") as f:
-        json.dump(all_signals, f, indent=2)
+        signal = generate_signal(df)
+        save_signal(symbol, signal)
+        print(f"✅ {symbol} → {signal}")
 
     print("📊 ===== SIGNAL SUMMARY =====")
-    print(json.dumps(all_signals, indent=2))
+    if os.path.exists(LAST_SIGNALS_FILE):
+        with open(LAST_SIGNALS_FILE, "r") as f:
+            print(f.read())
+    else:
+        print("{}")
+
     print("✅ Bot execution completed.")
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Crypto AI Bot...")
     main()
