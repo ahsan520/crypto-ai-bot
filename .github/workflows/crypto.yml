@@ -2,7 +2,7 @@ name: Crypto AI Bot
 
 on:
   schedule:
-    - cron: "0 * * * *" # hourly
+    - cron: "0 * * * *"  # Runs hourly
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: ⚡ Restore pip cache
         uses: actions/cache@v4
@@ -29,43 +29,67 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements.txt || echo "⚠️ requirements.txt not found, installing manually..."
           pip install PyYAML yfinance ta requests scikit-learn joblib pandas numpy python-binance
 
-      - name: 🔑 Set up environment
+      - name: 🧹 Prepare utils directory
+        run: |
+          mkdir -p utils
+          echo "{}" > utils/last_signals.json
+          echo "" > utils/signals.txt
+          echo "" > utils/holds.txt
+
+      - name: 🔑 Set up environment variables
         env:
+          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
-          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
-        run: echo "✅ Environment ready."
+        run: echo "✅ Environment variables configured."
+
+      - name: 🧠 Run AI Backtest Predictor
+        run: |
+          echo "🧠 Running AI predictor..."
+          python crypto_ai_backtest_multi.py || echo "⚠️ Predictor skipped (file not found)"
 
       - name: 🚀 Run Crypto AI Bot
         env:
+          ZAPIER_WEBHOOK_URL: ${{ secrets.ZAPIER_WEBHOOK_URL }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
-          ZAPIER_URL: ${{ secrets.ZAPIER_URL }}
         run: |
+          echo "🚀 Starting Crypto AI Bot..."
           python crypto_signal.py
-
-      - name: 💾 Always commit results (even if only HOLD)
-        run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "GitHub Actions"
-          git pull origin main || true
-          git add utils/last_signals.json utils/signals/*.txt
-          git commit -m "🤖 Update signals summary [skip ci]" || echo "No changes to commit."
-          git push origin main || echo "No push needed."
 
       - name: 🧠 Check for BUY/SELL signals
         id: check_signals
         run: |
-          if grep -qE "BUY|SELL" utils/signals/signals.txt; then
+          if grep -q "BUY" utils/signals.txt || grep -q "SELL" utils/signals.txt; then
             echo "found=true" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: 📧 Send BUY/SELL alert
+      - name: 💾 Commit and push updates (only if signals exist)
         if: steps.check_signals.outputs.found == 'true'
         run: |
-          echo "📨 BUY/SELL signals detected — triggering webhook/email."
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "GitHub Actions"
+          git pull origin main || true
+          git add utils/last_signals.json utils/signals.txt utils/holds.txt
+          git commit -m "🤖 Auto-update: crypto signals [skip ci]" || echo "No changes to commit."
+          git push origin main || echo "No push needed."
+
+      - name: 🧾 Display summary
+        run: |
+          echo "📊 ===== SIGNAL SUMMARY ====="
+          cat utils/last_signals.json || echo "{}"
+          echo ""
+          echo "🪙 BUY/SELL signals:"
+          cat utils/signals.txt || echo "No buy/sell signals found."
+          echo ""
+          echo "🕊 HOLD signals:"
+          cat utils/holds.txt || echo "No holds found."
