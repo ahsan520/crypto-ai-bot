@@ -1,27 +1,27 @@
 {
   "BUY": [
     {
-      "symbol": "BTC",
-      "price": 107460.0,
-      "time": "2025-10-30 21:08:59 UTC"
+      "symbol": "ETH",
+      "price": 3775.18,
+      "time": "2025-10-30 22:09:37 UTC"
     },
     {
-      "symbol": "ETH",
-      "price": 3749.21,
-      "time": "2025-10-30 21:09:00 UTC"
+      "symbol": "XRP",
+      "price": 2.43,
+      "time": "2025-10-30 22:09:38 UTC"
     },
     {
       "symbol": "GALA",
-      "price": 0.00963932,
-      "time": "2025-10-30 21:09:01 UTC"
+      "price": 0.00970857,
+      "time": "2025-10-30 22:09:38 UTC"
     }
   ],
   "SELL": [],
   "HOLD": [
     {
-      "symbol": "XRP",
-      "price": 2.42,
-      "time": "2025-10-30 21:09:00 UTC"
+      "symbol": "BTC",
+      "price": 107823.0,
+      "time": "2025-10-30 22:09:36 UTC"
     }
   ]
 }
