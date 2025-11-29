@@ -1,17 +1,17 @@
 {
   "BTC": {
     "signal": "HOLD",
-    "price": 90687.0,
-    "time": "2025-11-29 19:08:04 UTC"
+    "price": 90440.0,
+    "time": "2025-11-29 20:11:14 UTC"
   },
   "ETH": {
     "signal": "HOLD",
-    "price": 2996.05,
-    "time": "2025-11-29 19:08:04 UTC"
+    "price": 2984.99,
+    "time": "2025-11-29 20:11:14 UTC"
   },
   "XRP": {
-    "signal": "HOLD",
-    "price": 2.2,
-    "time": "2025-11-29 19:08:04 UTC"
+    "signal": "BUY",
+    "price": 2.19,
+    "time": "2025-11-29 20:11:15 UTC"
   }
 }
