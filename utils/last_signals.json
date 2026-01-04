@@ -1,22 +1,22 @@
 {
   "BTC": {
     "signal": "HOLD",
-    "price": 91045.0,
-    "time": "2026-01-04 13:23:27 UTC"
+    "price": 91261.0,
+    "time": "2026-01-04 14:09:33 UTC"
   },
   "ETH": {
     "signal": "HOLD",
-    "price": 3132.68,
-    "time": "2026-01-04 13:23:27 UTC"
+    "price": 3138.83,
+    "time": "2026-01-04 14:09:33 UTC"
   },
   "XRP": {
-    "signal": "HOLD",
+    "signal": "SELL",
     "price": 2.1,
-    "time": "2026-01-04 13:23:28 UTC"
+    "time": "2026-01-04 14:09:33 UTC"
   },
   "GALA": {
     "signal": "HOLD",
-    "price": 0.00702038,
-    "time": "2026-01-04 13:23:28 UTC"
+    "price": 0.0070753,
+    "time": "2026-01-04 14:09:34 UTC"
   }
 }
