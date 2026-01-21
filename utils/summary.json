@@ -1,17 +1,11 @@
 {
-  "BUY": [
-    {
-      "symbol": "GALA",
-      "price": 0.00639237,
-      "time": "2026-01-21 14:19:46 UTC"
-    }
-  ],
+  "BUY": [],
   "SELL": [],
   "HOLD": [
     {
-      "symbol": "BTC",
-      "price": 89478.0,
-      "time": "2026-01-21 14:19:45 UTC"
+      "symbol": "ETH",
+      "price": 3002.39,
+      "time": "2026-01-21 15:19:28 UTC"
     }
   ]
 }
